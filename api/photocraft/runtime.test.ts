@@ -1,6 +1,7 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PNG } from "pngjs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   applyDesignProposal,
@@ -12,9 +13,12 @@ import { disposePhotoCraftSessions } from "./session";
 import { probePhotoCraft, syncPhotoCraftRuntime } from "./runtime";
 
 const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+// Opaque 64 × 48 magenta fixture: transparent one-pixel images cannot prove
+// that a framed Smart Object is visible in the rendered pixels.
+const PNG_SOLID_PHOTO = "iVBORw0KGgoAAAANSUhEUgAAAEAAAAAwCAIAAAAuKetIAAAAU0lEQVR4nO3PQQ3AIADAQEAIElGMmIngcVnSU9DOu8/4s6UDXjWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaB90aUByG4TJA4AAAAASUVORK5CYII=";
 const fixtureDirectories: string[] = [];
 
-async function createFakeCli(behavior: "success" | "failure" = "success", appImage = false) {
+async function createFakeCli(behavior: "success" | "failure" | "step-failure" = "success", appImage = false) {
   const directory = await mkdtemp(path.join(tmpdir(), "blangko-cli-test-"));
   fixtureDirectories.push(directory);
   const binaryPath = path.join(directory, appImage ? "photocraft.AppImage" : "photocraft.cjs");
@@ -49,7 +53,10 @@ lines.on("line", (line) => {
       process.stdout.write(JSON.stringify({ id, ok: false, error: { message: "synthetic engine failure" } }) + "\\n");
       return;
     }
-    return reply(id, { results: [] });
+    if (${JSON.stringify(behavior)} === "step-failure") {
+      return reply(id, { completed: 1, failed: 1, results: [{ ok: true }, { ok: false, error: "synthetic step failure" }] });
+    }
+    return reply(id, { completed: params.steps.length, failed: 0, results: params.steps.map(() => ({ ok: true })) });
   }
   if (method === "doc.inspect") return reply(id, { layers: [{ name: "blangko-node:outside-names", kind: "Type" }] });
   if (method === "doc.render") return reply(id, { mime: "image/png", base64: ${JSON.stringify(PNG_1X1)} });
@@ -148,6 +155,15 @@ describe("PhotoCraft runtime protocol", () => {
     const requests = JSON.parse(await readFile(fake.logPath, "utf8")) as Array<{ method: string }>;
     expect(requests.at(-1)?.method).toBe("doc.close");
   });
+
+  it("menolak dokumen parsial ketika satu langkah di dalam batch gagal", async () => {
+    const fake = await createFakeCli("step-failure");
+    await expect(syncPhotoCraftRuntime(runtimeOptions(fake.binaryPath))).rejects.toThrow(
+      /PhotoCraft menghentikan batch pada langkah 2 \(.*\): synthetic step failure/,
+    );
+    const requests = JSON.parse(await readFile(fake.logPath, "utf8")) as Array<{ method: string }>;
+    expect(requests.at(-1)?.method).toBe("doc.close");
+  });
 });
 
 describe("PhotoCraft real engine regression", () => {
@@ -212,5 +228,69 @@ describe("PhotoCraft real engine regression", () => {
     expect(inspect).toMatch(/"kind"\s*:\s*"Shape"/);
     expect(inspect).toMatch(/Smart\s*Object/i);
     expect(result.manifest).toMatchObject({ schema: "blangko.photocraft.semantic.v2", projection: "composite" });
+  }, 120_000);
+
+  it("menampilkan piksel foto di pusat frame rectangle, ellipse, dan rounded", async () => {
+    const document = createInitialDocument();
+    document.stock = {
+      ...document.stock,
+      width: 90,
+      height: 40,
+      targetPpi: 300,
+      physicalSizeConfirmed: true,
+    };
+    document.assets.push({
+      id: "opaque-photo",
+      name: "opaque-photo.png",
+      kind: "photo",
+      source: "storage",
+      storageKey: "projects/test/opaque-photo.png",
+      contentType: "image/png",
+      width: 64,
+      height: 48,
+    });
+    const clips = ["rectangle", "ellipse", "rounded-rectangle"] as const;
+    document.sides[0].nodes = clips.map((clipShape, index) => ({
+      id: `visual-${clipShape}`,
+      kind: "image" as const,
+      role: "CONTENT" as const,
+      box: { x: 5 + index * 30, y: 10, width: 20, height: 20 },
+      rotation: 0,
+      visible: true,
+      locked: false,
+      opacity: 1,
+      zIndex: index + 1,
+      assetId: "opaque-photo",
+      clipShape,
+      cornerRadius: clipShape === "rounded-rectangle" ? 3 : undefined,
+    }));
+
+    const result = await syncPhotoCraftRuntime({
+      document,
+      sideId: "outside",
+      projection: "content-only",
+      assets: {
+        "opaque-photo": {
+          name: "opaque-photo.png",
+          contentType: "image/png",
+          dataBase64: PNG_SOLID_PHOTO,
+        },
+      },
+      maxSide: 2000,
+    });
+    const image = PNG.sync.read(Buffer.from(result.imageBase64, "base64"));
+    const pxPerMm = 300 / 25.4;
+    const scale = Math.min(1, 2000 / Math.max(image.width, image.height));
+    const pixel = (x: number, y: number) => {
+      const offset = (Math.round(y) * image.width + Math.round(x)) * 4;
+      return [...image.data.subarray(offset, offset + 4)];
+    };
+
+    for (const [index, clip] of clips.entries()) {
+      const center = pixel((15 + index * 30) * pxPerMm * scale, 20 * pxPerMm * scale);
+      expect(center, `foto ${clip} harus terlihat di pusat frame`).toSatisfy(
+        ([r, g, b, a]) => r > 180 && g < 100 && b > 60 && b < 170 && a > 240,
+      );
+    }
   }, 120_000);
 });

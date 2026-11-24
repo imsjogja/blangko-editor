@@ -20,6 +20,7 @@ export function deterministicDirection(
   document: InvitationDocument,
   style: DesignStyle,
   prompt = "",
+  sideId: SideId = "outside",
 ): DesignDirection {
   const copy = {
     modern: {
@@ -27,21 +28,21 @@ export function deterministicDirection(
       subtitle: "Satu hari istimewa, satu cerita untuk selamanya.",
       ornament: "none" as const,
       layout: "asymmetric" as const,
-      heading: "Arial",
+      heading: "Noto Serif",
     },
     rustic: {
       eyebrow: "DENGAN HORMAT",
       subtitle: "Bersama keluarga dan sahabat, kami mengundang Anda dalam perayaan kami.",
       ornament: "botanical" as const,
       layout: "center" as const,
-      heading: "Georgia",
+      heading: "Great Vibes",
     },
     classic: {
       eyebrow: "THE WEDDING CELEBRATION",
       subtitle: "Dengan penuh syukur kami mengundang Anda untuk menjadi bagian dari hari bahagia ini.",
       ornament: "lines" as const,
       layout: "editorial" as const,
-      heading: "Georgia",
+      heading: "Great Vibes",
     },
   }[style];
   const layout = /asimetr|asymmetric/i.test(prompt)
@@ -59,11 +60,15 @@ export function deterministicDirection(
         ? "lines" as const
         : copy.ornament;
 
+  const activeSide = getSide(document, sideId);
+  const measuredPalette = document.assets.find((asset) => asset.id === activeSide.blangkoAssetId)
+    ?.analysis?.visual?.palette;
+
   return {
-    summary: `Komposisi ${layout} dengan dua focal point terkendali, hierarki nama yang kuat, dan ornamen ${ornament}.`,
+    summary: `Komposisi ${layout} dengan dua focal point terkendali, hierarki nama yang kuat, dan ornamen ${ornament}${measuredPalette ? "; palet mengikuti blangko" : ""}.`,
     layout,
-    palette: palettes[style],
-    typography: { heading: copy.heading, body: "Arial" },
+    palette: measuredPalette ?? palettes[style],
+    typography: { heading: copy.heading, body: "Inter" },
     content: {
       eyebrow: copy.eyebrow,
       title: document.design.coupleNames,
@@ -99,17 +104,29 @@ function round(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+function roundUp(value: number) {
+  return Math.ceil(value * 100) / 100;
+}
+
+function roundDown(value: number) {
+  return Math.floor(value * 100) / 100;
+}
+
 function insetCell(cell: GridCell, document: InvitationDocument): GridCell {
   const margin = Math.min(
     Math.max(4, document.stock.safeMargin),
     Math.min(cell.width, cell.height) / 5,
   );
+  const x = roundUp(cell.x + margin);
+  const y = roundUp(cell.y + margin);
+  const right = roundDown(cell.x + cell.width - margin);
+  const bottom = roundDown(cell.y + cell.height - margin);
   return {
     ...cell,
-    x: round(cell.x + margin),
-    y: round(cell.y + margin),
-    width: round(Math.max(2, cell.width - margin * 2)),
-    height: round(Math.max(2, cell.height - margin * 2)),
+    x,
+    y,
+    width: Math.max(2, round(right - x)),
+    height: Math.max(2, round(bottom - y)),
   };
 }
 
@@ -160,6 +177,82 @@ export function getDesignPanelMap(document: InvitationDocument, sideId: SideId):
     { ...primary, role: "primary" },
     ...(secondary ? [{ ...insetCell(secondary, document), role: "secondary" as const }] : []),
   ];
+}
+
+function panelDensity(
+  document: InvitationDocument,
+  sideId: SideId,
+  panel: GridCell,
+) {
+  const side = getSide(document, sideId);
+  const visual = document.assets.find((asset) => asset.id === side.blangkoAssetId)?.analysis?.visual;
+  if (!visual) return { average: 0, peak: 0 };
+  const values: number[] = [];
+  const x0 = clamp(panel.x / document.stock.width, 0, 1);
+  const x1 = clamp((panel.x + panel.width) / document.stock.width, 0, 1);
+  const y0 = clamp(panel.y / document.stock.height, 0, 1);
+  const y1 = clamp((panel.y + panel.height) / document.stock.height, 0, 1);
+  for (let row = 0; row < visual.rows; row += 1) {
+    const cellY0 = row / visual.rows;
+    const cellY1 = (row + 1) / visual.rows;
+    if (cellY1 <= y0 || cellY0 >= y1) continue;
+    for (let column = 0; column < visual.columns; column += 1) {
+      const cellX0 = column / visual.columns;
+      const cellX1 = (column + 1) / visual.columns;
+      if (cellX1 <= x0 || cellX0 >= x1) continue;
+      values.push(visual.density[row * visual.columns + column] ?? 0);
+    }
+  }
+  return {
+    average: values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length),
+    peak: Math.max(0, ...values),
+  };
+}
+
+function fitPanelToQuietZone(
+  document: InvitationDocument,
+  sideId: SideId,
+  panel: DesignPanel,
+): DesignPanel {
+  const side = getSide(document, sideId);
+  const hasVisual = document.assets.some((asset) => asset.id === side.blangkoAssetId && asset.analysis?.visual);
+  if (!hasVisual) return panel;
+  let best = panel;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const widthRatio of [1, 0.86, 0.72]) {
+    for (const heightRatio of [1, 0.88, 0.76]) {
+      for (const xRatio of widthRatio === 1 ? [0] : [0, 0.5, 1]) {
+        for (const yRatio of heightRatio === 1 ? [0] : [0, 0.5, 1]) {
+          const x = roundUp(panel.x + panel.width * (1 - widthRatio) * xRatio);
+          const y = roundUp(panel.y + panel.height * (1 - heightRatio) * yRatio);
+          const right = roundDown(panel.x + panel.width * (1 - widthRatio) * xRatio + panel.width * widthRatio);
+          const bottom = roundDown(panel.y + panel.height * (1 - heightRatio) * yRatio + panel.height * heightRatio);
+          const candidate: DesignPanel = {
+            ...panel,
+            x,
+            y,
+            width: Math.max(2, round(right - x)),
+            height: Math.max(2, round(bottom - y)),
+          };
+          const density = panelDensity(document, sideId, candidate);
+          const shift = Math.abs(candidate.x + candidate.width / 2 - panel.x - panel.width / 2) / panel.width
+            + Math.abs(candidate.y + candidate.height / 2 - panel.y - panel.height / 2) / panel.height;
+          const score = density.average + density.peak * 0.12
+            + (1 - widthRatio * heightRatio) * 0.35 + shift * 0.018;
+          if (score < bestScore) {
+            best = candidate;
+            bestScore = score;
+          }
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/** Fold-safe panels refined by measured whitespace and ornament density. */
+export function getDesignCompositionPanelMap(document: InvitationDocument, sideId: SideId): DesignPanel[] {
+  return getDesignPanelMap(document, sideId).map((panel) => fitPanelToQuietZone(document, sideId, panel));
 }
 
 function node(
@@ -271,19 +364,23 @@ function addBotanical(
   centerX: number,
   y: number,
   color: string,
+  scale = 1,
 ) {
+  const stemWidth = 24 * scale;
   for (const direction of [-1, 1]) {
-    nodes.push(node(`${id}-stem-${direction}`, "shape", centerX + direction * 3 - 12, y, 24, 0.4, {
-      semanticRole: "ornament", backgroundColor: color, rotation: direction * 24, opacity: 0.8, zIndex: 1,
-    }));
+    nodes.push(node(`${id}-stem-${direction}`, "shape",
+      centerX + direction * 3 * scale - stemWidth / 2, y, stemWidth, 0.4 * scale, {
+        semanticRole: "ornament", backgroundColor: color, rotation: direction * 24, opacity: 0.72, zIndex: 1,
+      }));
     for (let index = 0; index < 2; index += 1) {
       nodes.push(node(`${id}-leaf-${direction}-${index}`, "shape",
-        centerX + direction * (8 + index * 7) - 2.5, y - 3 + index * 2, 5, 2.2, {
+        centerX + direction * (8 + index * 7) * scale - 2.5 * scale,
+        y - 3 * scale + index * 2 * scale, 5 * scale, 2.2 * scale, {
           shapeType: "ellipse",
           semanticRole: "ornament",
           backgroundColor: color,
           rotation: direction * (35 + index * 12),
-          opacity: 0.72,
+          opacity: 0.68,
           zIndex: 1,
         }));
     }
@@ -300,104 +397,117 @@ function buildCoverPanel(
   const { width: w, height: h } = panel;
   const centerX = panel.x + w / 2;
   const align = direction.layout === "asymmetric" ? "left" : "center";
-  const bodyFont = clamp(w * 0.085, 9, 12);
+  const bodyFont = clamp(w * 0.072, 9, 12);
   const titleLength = document.design.coupleNames.length;
+  const scriptTitle = direction.typography.heading === "Great Vibes";
   const titleFont = clamp(
-    w * 0.28 * Math.min(1, 18 / Math.max(18, titleLength)),
-    18,
-    38,
+    w * (scriptTitle ? 0.37 : 0.25) * Math.min(1, 20 / Math.max(20, titleLength)),
+    scriptTitle ? 25 : 20,
+    scriptTitle ? 52 : 38,
   );
-  const detailsHeight = clamp(h * 0.18, 20, 36);
+  const detailsHeight = hasSecondaryPanel ? clamp(h * 0.11, 12, 16) : clamp(h * 0.15, 20, 30);
   const detailsY = panel.y + h - detailsHeight;
   const photo = document.assets.find((asset) => asset.kind === "photo");
-  let cursor = panel.y;
+  const eyebrowY = panel.y + h * 0.10;
+  const eyebrowHeight = clamp(h * 0.048, 6, 10);
 
-  if (photo) {
-    const photoHeight = clamp(h * 0.28, 20, 58);
-    const photoWidth = Math.min(w * 0.62, photoHeight * 0.80);
+  nodes.push(text("agent-eyebrow", direction.content.eyebrow, panel, eyebrowY, eyebrowHeight,
+    clamp(bodyFont - 0.5, 8, 10.5), direction, {
+      semanticRole: "eyebrow",
+      fontWeight: 500,
+      letterSpacing: 1.7,
+      textAlign: align,
+      color: direction.palette.primary,
+    }));
+
+  if (photo && h > 55) {
+    const ringSize = clamp(w * 0.075, 7, 11);
+    const ringY = eyebrowY - ringSize - h * 0.025;
+    if (ringY >= panel.y - 1) {
+      for (const [index, offset] of [-0.28, 0.28].entries()) {
+        nodes.push(node(`agent-rings-${index}`, "shape",
+          centerX - ringSize / 2 + offset * ringSize, ringY, ringSize, ringSize, {
+            shapeType: "ellipse",
+            semanticRole: "ornament",
+            borderColor: direction.palette.accent,
+            borderWidth: 0.45,
+            zIndex: 1,
+          }));
+      }
+    }
+    const photoHeight = clamp(h * 0.40, 20, 58);
+    const photoWidth = Math.min(w * 0.58, photoHeight * 0.82);
     const photoX = direction.layout === "asymmetric"
-      ? panel.x + w * 0.06
+      ? panel.x + w * 0.08
       : centerX - photoWidth / 2;
-    nodes.push(node("agent-photo-frame", "shape", photoX - 1.4, cursor,
-      photoWidth + 2.8, photoHeight + 2.8, {
+    const photoY = panel.y + h * 0.23;
+    nodes.push(node("agent-photo-ring", "shape", photoX - 2.5, photoY - 2.5,
+      photoWidth + 5, photoHeight + 5, {
         shapeType: "ellipse",
         semanticRole: "frame",
-        backgroundColor: direction.palette.paper,
         borderColor: direction.palette.accent,
-        borderWidth: 0.5,
+        borderWidth: 0.35,
         zIndex: 1,
       }));
-    nodes.push(node("agent-photo", "image", photoX, cursor + 1.4, photoWidth, photoHeight, {
+    nodes.push(node("agent-photo-frame", "shape", photoX - 1.25, photoY - 1.25,
+      photoWidth + 2.5, photoHeight + 2.5, {
+        shapeType: "ellipse",
+        semanticRole: "frame",
+        borderColor: direction.palette.accent,
+        borderWidth: 0.55,
+        zIndex: 1,
+      }));
+    nodes.push(node("agent-photo", "image", photoX, photoY, photoWidth, photoHeight, {
       assetId: photo.id,
       clipShape: "ellipse",
       semanticRole: "photo",
       zIndex: 2,
     }));
-    if (direction.ornament === "botanical" && h > 100) {
-      addBotanical(nodes, "agent-cover-botanical", centerX, cursor + photoHeight * 0.72,
-        direction.palette.accent);
+    if (direction.ornament === "botanical") {
+      addBotanical(nodes, "agent-cover-botanical", centerX, photoY + photoHeight * 0.96,
+        direction.palette.accent, 0.72);
     }
-    cursor += photoHeight + 2.8 + h * 0.055;
-  } else if (h > 100) {
-    const monogramSize = clamp(Math.min(w, h) * 0.15, 17, 26);
-    addMonogram(nodes, "agent-cover-monogram", panel, cursor, monogramSize, document, direction);
-    cursor += monogramSize + h * 0.05;
-  } else {
-    cursor += h * 0.04;
+  } else if (h > 75) {
+    const monogramSize = clamp(Math.min(w, h) * 0.18, 17, 28);
+    addMonogram(nodes, "agent-cover-monogram", panel, panel.y + h * 0.22,
+      monogramSize, document, direction);
   }
 
-  const eyebrowHeight = clamp(h * 0.045, 6, 10);
-  nodes.push(text("agent-eyebrow", direction.content.eyebrow, panel, cursor, eyebrowHeight,
-    clamp(bodyFont - 1, 8, 10), direction, {
-      semanticRole: "eyebrow",
-      fontWeight: 600,
-      letterSpacing: 1.4,
-      textAlign: align,
-      color: direction.palette.accent,
-    }));
+  const dividerY = panel.y + h * 0.66;
+  addDivider(nodes, "agent-divider", centerX, dividerY, Math.min(58, w * 0.52), direction.palette.accent);
 
-  const titleY = cursor + eyebrowHeight + h * 0.025;
-  const titleHeight = Math.max(12, Math.min(clamp(h * 0.16, 17, 34), detailsY - titleY - 10));
+  const titleY = panel.y + h * 0.70;
+  const titleHeight = Math.min(clamp(h * 0.135, 15, 30), detailsY - titleY - 2);
   nodes.push(text("agent-title", document.design.coupleNames, panel, titleY, titleHeight,
     titleFont, direction, {
       semanticRole: "title",
       fontFamily: direction.typography.heading,
-      fontWeight: direction.layout === "asymmetric" ? 600 : 400,
+      fontWeight: 400,
       textAlign: align,
       color: direction.palette.primary,
     }));
 
-  const dividerY = Math.min(titleY + titleHeight + 4, detailsY - 6);
-  addDivider(nodes, "agent-divider", centerX, dividerY, Math.min(52, w * 0.46), direction.palette.accent);
-
-  if (!hasSecondaryPanel && detailsY - dividerY > 22) {
-    nodes.push(text("agent-subtitle", direction.content.subtitle, panel, dividerY + 5,
-      Math.min(20, detailsY - dividerY - 7), bodyFont - 0.5, direction, {
-        semanticRole: "subtitle",
-        fontStyle: direction.ornament === "lines" ? "italic" : "normal",
-        textAlign: align,
-      }));
-  }
-
-  const cardInset = w * 0.04;
-  nodes.push(node("agent-date-pill", "shape", panel.x + cardInset, detailsY,
-    w - cardInset * 2, detailsHeight, {
-      shapeType: "rounded-rectangle",
-      cornerRadius: direction.layout === "asymmetric" ? 2.5 : detailsHeight / 2,
-      semanticRole: "card",
-      backgroundColor: direction.palette.paper,
-      borderColor: direction.palette.accent,
-      borderWidth: direction.ornament === "lines" ? 0.35 : 0,
-      opacity: 0.94,
-      zIndex: 1,
-    }));
-  nodes.push(text("agent-details", `${document.design.eventDate}\n${document.design.venue}`,
-    { ...panel, x: panel.x + cardInset + 4, width: w - (cardInset + 4) * 2 },
-    detailsY + 2, detailsHeight - 4, bodyFont, direction, {
+  const cardWidth = hasSecondaryPanel ? clamp(w * 0.64, 44, 62) : w * 0.92;
+  const cardX = direction.layout === "asymmetric" ? panel.x : centerX - cardWidth / 2;
+  const filledCard = hasSecondaryPanel;
+  nodes.push(node("agent-date-pill", "shape", cardX, detailsY, cardWidth, detailsHeight, {
+    shapeType: "rounded-rectangle",
+    cornerRadius: filledCard ? 1.8 : direction.layout === "asymmetric" ? 2.5 : 4,
+    semanticRole: "card",
+    backgroundColor: filledCard ? direction.palette.primary : direction.palette.paper,
+    borderColor: direction.palette.accent,
+    borderWidth: filledCard ? 0 : 0.35,
+    opacity: 0.96,
+    zIndex: 1,
+  }));
+  nodes.push(text("agent-details",
+    `${document.design.eventDate}\n${document.design.venue}`,
+    { ...panel, x: cardX + 3, width: cardWidth - 6 },
+    detailsY + 1.5, detailsHeight - 3, clamp(bodyFont - 0.5, 8, 10), direction, {
       semanticRole: "details",
-      fontWeight: 600,
-      textAlign: align,
-      color: direction.palette.primary,
+      fontWeight: 500,
+      textAlign: "center",
+      color: filledCard ? direction.palette.paper : direction.palette.primary,
       zIndex: 2,
     }));
 }
@@ -410,23 +520,29 @@ function buildQuotePanel(
 ) {
   const { width: w, height: h } = panel;
   const centerX = panel.x + w / 2;
-  const monogramSize = clamp(Math.min(w, h) * 0.18, 17, 32);
-  addMonogram(nodes, "agent-quote-monogram", panel, panel.y + h * 0.12,
-    monogramSize, document, direction);
-  addDivider(nodes, "agent-quote-divider", centerX, panel.y + h * 0.40,
-    Math.min(48, w * 0.42), direction.palette.accent);
   nodes.push(text("agent-subtitle", direction.content.subtitle,
     { ...panel, x: panel.x + w * 0.08, width: w * 0.84 },
-    panel.y + h * 0.45, h * 0.28, clamp(w * 0.10, 9.5, 14), direction, {
+    panel.y + h * 0.20, h * 0.30, clamp(w * 0.092, 10, 15), direction, {
       semanticRole: "quote",
-      fontFamily: direction.typography.heading,
+      fontFamily: "Noto Serif",
       fontStyle: "italic",
-      letterSpacing: 0.15,
+      letterSpacing: 0.1,
       color: direction.palette.primary,
     }));
-  if (direction.ornament === "botanical" && h > 85) {
-    addBotanical(nodes, "agent-quote-botanical", centerX, panel.y + h * 0.83,
-      direction.palette.accent);
+  addDivider(nodes, "agent-quote-divider", centerX, panel.y + h * 0.61,
+    Math.min(54, w * 0.48), direction.palette.accent);
+  nodes.push(text("agent-quote-monogram", initials(document.design.coupleNames),
+    panel, panel.y + h * 0.68, clamp(h * 0.13, 12, 24),
+    clamp(w * 0.19, 20, 34), direction, {
+      semanticRole: "monogram",
+      fontFamily: "Noto Serif",
+      fontStyle: "italic",
+      letterSpacing: 1.2,
+      color: direction.palette.accent,
+    }));
+  if (direction.ornament === "botanical") {
+    addBotanical(nodes, "agent-quote-botanical", centerX, panel.y + h * 0.90,
+      direction.palette.accent, 0.65);
   }
 }
 
@@ -532,7 +648,7 @@ export function buildNodesFromDirection(
   sideId: SideId,
   direction: DesignDirection,
 ): DesignNode[] {
-  const panels = getDesignPanelMap(document, sideId);
+  const panels = getDesignCompositionPanelMap(document, sideId);
   const primary = panels[0];
   const secondary = panels[1];
   const nodes: DesignNode[] = [];
@@ -580,7 +696,7 @@ export function createDeterministicProposal(
   warning?: string,
   prompt = "",
 ): DesignProposal {
-  const direction = deterministicDirection(document, style, prompt);
+  const direction = deterministicDirection(document, style, prompt, sideId);
   return finalizeProposal(document, {
     id: randomUUID(),
     mode: "deterministic",
@@ -599,17 +715,18 @@ export function createAiProposal(
   style: DesignStyle,
   direction: DesignDirection,
 ): DesignProposal {
-  const fallback = deterministicDirection(document, style);
+  const fallback = deterministicDirection(document, style, "", sideId);
   const productionNotes = /preflight|size_|\bmm\b|koordinat|lipatan|panel|warna|font|layout|produksi|bleed/i;
   const visualClaims = /melihat gambar|menginspeksi (gambar|visual)|sudah print.?ready|siap cetak final/i;
   const safeDirection: DesignDirection = {
     ...direction,
     summary: visualClaims.test(direction.summary) ? fallback.summary : direction.summary,
+    palette: fallback.palette,
     typography: {
-      heading: ["Georgia", "Arial"].includes(direction.typography.heading)
+      heading: ["Great Vibes", "Noto Serif", "Inter"].includes(direction.typography.heading)
         ? direction.typography.heading
         : fallback.typography.heading,
-      body: ["Georgia", "Arial"].includes(direction.typography.body)
+      body: ["Noto Serif", "Inter"].includes(direction.typography.body)
         ? direction.typography.body
         : fallback.typography.body,
     },

@@ -8,4 +8,9 @@ if (!existsSync(path.join(source, "photocraft-cli.gz"))) {
 }
 mkdirSync(path.dirname(target), { recursive: true });
 cpSync(source, target, { recursive: true, force: true });
-console.log("PhotoCraft runtime disalin ke dist/vendor/photocraft.");
+const fontSource = path.resolve("public/fonts");
+if (!existsSync(path.join(fontSource, "Inter-Regular.ttf"))) {
+  throw new Error("Font bundled belum tersedia di public/fonts.");
+}
+cpSync(fontSource, path.resolve("dist/fonts"), { recursive: true, force: true });
+console.log("PhotoCraft runtime dan font bundled disalin ke dist.");

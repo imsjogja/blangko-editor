@@ -11,6 +11,7 @@ import {
   createAiProposal,
   createDeterministicProposal,
   deterministicDirection,
+  getDesignCompositionPanelMap,
   getDesignPanelMap,
 } from "./design";
 
@@ -82,7 +83,7 @@ describe("design proposals", () => {
     expect(details?.text).toBe(`${document.design.eventDate}\n${document.design.venue}`);
     expect(title?.text).toBe(document.design.coupleNames);
     expect(subtitle?.text).not.toMatch(/preflight|produksi|\bmm\b/i);
-    expect(title?.fontFamily).toBe("Georgia");
+    expect(title?.fontFamily).toBe("Great Vibes");
     expect(runPreflight(candidate, "outside").filter((issue) => issue.severity === "error")).toEqual([]);
     expect(proposal.nodes.every((node) => node.box.y + node.box.height <= document.stock.height)).toBe(true);
   });
@@ -120,6 +121,74 @@ describe("design proposals", () => {
       expect(geometryIssues).toEqual([]);
       expect(proposal.quality?.hardGates.find((gate) => gate.id === "SAFE-PANELS")?.passed).toBe(true);
     }
+  });
+
+  it("keeps fractional-millimetre BL01 panels inward and gives event details enough room", () => {
+    const document = confirmedDocument();
+    document.stock.width = 90.375;
+    document.stock.height = 200;
+    document.stock.safeMargin = 5;
+    document.design.venue = "Pendopo Agung • Yogyakarta";
+    document.assets.push({
+      id: "photo-bl01",
+      name: "cover.png",
+      kind: "photo",
+      source: "storage",
+      storageKey: "projects/test/bl01-cover.png",
+      contentType: "image/png",
+      width: 600,
+      height: 800,
+    });
+    document.sides = document.sides.map((side) => ({
+      ...side,
+      foldLines: [{ id: `fold-${side.id}`, axis: "horizontal", positionMm: 116.25, kind: "fold" }],
+      nodes: [],
+    }));
+
+    const panels = getDesignPanelMap(document, "outside");
+    for (const panel of panels) {
+      expect(panel.x).toBeGreaterThanOrEqual(document.stock.safeMargin);
+      expect(panel.x + panel.width).toBeLessThanOrEqual(document.stock.width - document.stock.safeMargin);
+    }
+    const proposal = createDeterministicProposal(document, "outside", "rustic");
+    const candidate = applyDesignProposal(document, proposal);
+    const details = proposal.nodes.find((node) => node.id === "agent-details");
+    const pill = proposal.nodes.find((node) => node.id === "agent-date-pill");
+
+    expect(runPreflight(candidate, "outside").filter((issue) =>
+      ["NODE_OUTSIDE", "FOLD_CLEARANCE", "SAFE_MARGIN"].includes(issue.code)
+    )).toEqual([]);
+    expect(proposal.quality?.hardGates.every((gate) => gate.passed)).toBe(true);
+    expect(pill?.box.height).toBeGreaterThanOrEqual(12);
+    expect(details?.box.width).toBeGreaterThanOrEqual(38);
+    expect(details?.fontSize).toBeGreaterThanOrEqual(8);
+  });
+
+  it("moves composition toward measured quiet space and reuses the blangko palette", () => {
+    const document = confirmedDocument();
+    document.sides[0].foldLines = [];
+    const columns = 18;
+    const rows = 32;
+    const density = Array.from({ length: columns * rows }, (_, index) =>
+      index % columns < columns / 2 ? 0.85 : 0.015
+    );
+    const palette = { paper: "#F4EFDF", primary: "#34382C", accent: "#687044" };
+    document.assets[0].analysis = {
+      widthMm: document.stock.width,
+      heightMm: document.stock.height,
+      sizeSource: "aspect-preserved",
+      confidence: 0.8,
+      folds: [],
+      warnings: [],
+      visual: { columns, rows, density, palette },
+    };
+
+    const raw = getDesignPanelMap(document, "outside")[0];
+    const quiet = getDesignCompositionPanelMap(document, "outside")[0];
+    const direction = deterministicDirection(document, "rustic");
+    expect(quiet.x).toBeGreaterThan(raw.x + raw.width * 0.1);
+    expect(quiet.width).toBeLessThan(raw.width);
+    expect(direction.palette).toEqual(palette);
   });
 
   it("builds a rich editable cover with an oval photo and honest structural QA", () => {

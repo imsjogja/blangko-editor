@@ -118,7 +118,11 @@ function roundedRectPath(x: number, y: number, width: number, height: number, ra
   };
 }
 
-function nodePropertySteps(node: DesignNode, name: string): PhotoCraftEngineStep[] {
+function nodePropertySteps(
+  node: DesignNode,
+  name: string,
+  rect: [number, number, number, number],
+): PhotoCraftEngineStep[] {
   const steps: PhotoCraftEngineStep[] = [];
   if (node.opacity < 1) {
     steps.push(engineCommand("layer.layerStyle.blendingOptions", {
@@ -129,6 +133,9 @@ function nodePropertySteps(node: DesignNode, name: string): PhotoCraftEngineStep
   if (node.rotation) {
     steps.push(engineCommand("edit.transform", {
       layer: name,
+      // Explicit semantic bounds also work for fully transparent images, whose
+      // pixel-only bounds are empty and otherwise rejected by PhotoCraft.
+      rect,
       rotate: node.rotation,
       reference: "center",
     }));
@@ -177,7 +184,10 @@ export function compilePhotoCraftEngineSteps(
     steps.push(engineCommand("layer.new.frame", frameParams));
     steps.push({
       method: "doc.place",
-      params: { path: sourcePath, fit: true, center: [x + width / 2, y + height / 2] },
+      // PhotoCraft interprets `center` in frame-local coordinates and then applies
+      // the frame transform. Omitting it centres on the frame itself; passing a
+      // canvas-space centre here would translate the image twice.
+      params: { path: sourcePath, fit: true },
     });
   };
 
@@ -229,7 +239,12 @@ export function compilePhotoCraftEngineSteps(
         name,
       }));
     }
-    steps.push(...nodePropertySteps(node, name));
+    steps.push(...nodePropertySteps(node, name, [
+      x,
+      y,
+      px(node.box.x + node.box.width),
+      px(node.box.y + node.box.height),
+    ]));
   }
   return steps;
 }

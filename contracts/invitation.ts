@@ -53,6 +53,18 @@ export const blangkoAnalysisSchema = z.object({
     confidence: z.number().min(0).max(1),
     source: z.enum(["edge-projection", "layout-heuristic"]),
   })).max(4),
+  visual: z.object({
+    columns: z.number().int().min(4).max(32),
+    rows: z.number().int().min(4).max(64),
+    density: z.array(z.number().min(0).max(1)).max(2048),
+    palette: z.object({
+      paper: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+      primary: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+      accent: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    }),
+  }).refine((visual) => visual.density.length === visual.columns * visual.rows, {
+    message: "Grid densitas visual tidak sesuai dimensi.",
+  }).optional(),
   warnings: z.array(z.string().max(240)).max(8),
 });
 

@@ -1,3 +1,10 @@
+@font-face { font-family: "Inter"; src: url("/fonts/Inter-Regular.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("/fonts/Inter-Medium.ttf") format("truetype"); font-style: normal; font-weight: 500; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("/fonts/Inter-SemiBold.ttf") format("truetype"); font-style: normal; font-weight: 600 800; font-display: swap; }
+@font-face { font-family: "Noto Serif"; src: url("/fonts/NotoSerif-Regular.ttf") format("truetype"); font-style: normal; font-weight: 400 700; font-display: swap; }
+@font-face { font-family: "Noto Serif"; src: url("/fonts/NotoSerif-Italic.ttf") format("truetype"); font-style: italic; font-weight: 400 700; font-display: swap; }
+@font-face { font-family: "Great Vibes"; src: url("/fonts/GreatVibes-Regular.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

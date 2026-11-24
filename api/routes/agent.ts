@@ -10,7 +10,7 @@ import {
   sideIdSchema,
 } from "@contracts/invitation";
 import { createKimiGateway, listModels, classifyAiError, AiMisconfigured, AiUnavailable, ContentRejected } from "../ai/ai-client";
-import { createAiProposal, createDeterministicProposal, getDesignPanelMap } from "../design";
+import { createAiProposal, createDeterministicProposal, getDesignCompositionPanelMap } from "../design";
 
 export const agentRoutes = new Hono();
 
@@ -57,7 +57,7 @@ agentRoutes.post("/run", async (c) => {
         snapshot: { phase: "ANALYZING", projectRevision: null, proposalCount: 0 },
       }));
       await send(event("STEP_STARTED", { stepName: "analyze-document" }));
-      await progress("analysis", "Memeriksa ukuran, panel lipatan, dan zona aman…", 18);
+      await progress("analysis", "Memeriksa ukuran, lipatan, whitespace, dan warna blangko…", 18);
 
       const issues = runPreflight(document, request.sideId);
       await send(event("STEP_FINISHED", { stepName: "analyze-document" }));
@@ -75,14 +75,16 @@ agentRoutes.post("/run", async (c) => {
         physicalCanvasMm: { width: document.stock.width, height: document.stock.height },
         safeMarginMm: document.stock.safeMargin,
         physicalSizeConfirmed: document.stock.physicalSizeConfirmed,
-        panels: getDesignPanelMap(document, request.sideId),
+        panels: getDesignCompositionPanelMap(document, request.sideId),
         blangkoAnalysis: activeBlangko?.analysis ?? null,
         assetInventory: {
           photos: document.assets.filter((asset) => asset.kind === "photo").length,
           ornaments: document.assets.filter((asset) => asset.kind === "ornament").length,
           maps: document.assets.filter((asset) => asset.kind === "map").length,
         },
-        visualInput: "Model tidak menerima piksel blangko; gunakan metadata ini tanpa mengklaim inspeksi gambar.",
+        visualInput: activeBlangko?.analysis?.visual
+          ? "Grid density dan palette dihitung dari piksel blangko di browser. Panel sudah digeser ke zona tenang; gunakan metadata ini tanpa mengklaim melihat piksel secara langsung."
+          : "Belum ada metadata visual. Jangan mengklaim inspeksi gambar; minta analisis blangko dijalankan.",
       };
       try {
         const { defaultModelId } = await listModels();
@@ -90,7 +92,7 @@ agentRoutes.post("/run", async (c) => {
         const result = await generateObject({
           model: gateway(defaultModelId),
           schema: designDirectionSchema,
-          system: "Anda adalah art director sekaligus layout engineer untuk undangan blangko. Berikan arahan visual yang dapat dikompilasi menjadi scene editable, bukan analisis produksi. Audit peta panel dan pertahankan maksimal dua focal point per panel: foto/monogram dan nama. Sisi luar memprioritaskan cover serta panel kutipan; sisi dalam memprioritaskan pembuka serta rincian acara. Blangko tidak boleh diganti dan latarnya harus tetap terlihat. Field summary hanya berisi ringkasan desain tanpa klaim telah melihat gambar atau kesiapan cetak. Field content.eyebrow berisi label singkat; content.subtitle berisi satu kalimat ajakan hangat maksimal 180 karakter; content.body tidak dicetak dari jawaban Anda. Jangan menaruh ukuran, koordinat, preflight, warna, font, catatan lipatan, atau instruksi produksi di field content. Nama pasangan, tanggal, dan venue selalu diambil dari data proyek. Jangan mengarang waktu, orang tua, akad, resepsi, atau alamat tambahan. Warna harus hex enam digit dan merupakan hipotesis sampai tinjauan komposit. Gunakan font Georgia atau Arial.",
+          system: "Anda adalah art director sekaligus layout engineer untuk undangan blangko. Berikan arahan visual yang dapat dikompilasi menjadi scene editable, bukan analisis produksi. Audit peta panel dan pertahankan maksimal dua focal point per panel: foto/monogram dan nama. Sisi luar memprioritaskan cover serta panel kutipan; sisi dalam memprioritaskan pembuka serta rincian acara. Blangko tidak boleh diganti dan latarnya harus tetap terlihat. Field summary hanya berisi ringkasan desain tanpa klaim telah melihat gambar atau kesiapan cetak. Field content.eyebrow berisi label singkat; content.subtitle berisi satu kalimat ajakan hangat maksimal 180 karakter; content.body tidak dicetak dari jawaban Anda. Jangan menaruh ukuran, koordinat, preflight, warna, font, catatan lipatan, atau instruksi produksi di field content. Nama pasangan, tanggal, dan venue selalu diambil dari data proyek. Jangan mengarang waktu, orang tua, akad, resepsi, atau alamat tambahan. Warna harus hex enam digit dan merupakan hipotesis sampai tinjauan komposit. Gunakan hanya font Great Vibes, Noto Serif, atau Inter yang dipaketkan. Pertahankan visual DNA dan palette hasil analisis blangko; jangan menambahkan kartu atau ornamen besar yang menutupi zona tenang.",
           prompt: `Konteks terstruktur: ${JSON.stringify(designContext)}\nNama: ${document.design.coupleNames}. Acara: ${document.design.eventDate}. Lokasi: ${document.design.venue}.\nPermintaan pengguna: ${request.prompt || "Tidak ada tambahan"}.\nHasil preflight awal: ${JSON.stringify(issues)}`, 
         });
         proposal = createAiProposal(document, request.sideId, request.style, result.object);

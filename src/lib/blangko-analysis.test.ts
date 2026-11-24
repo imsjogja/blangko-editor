@@ -54,6 +54,26 @@ describe("analisis computer vision blangko", () => {
     expect(result.folds[0].confidence).toBe(0.25);
   });
 
+  it("mengukur zona tenang dan mengekstrak palet visual blangko", () => {
+    const raster = syntheticRaster(false);
+    for (let y = 0; y < 46; y += 1) {
+      for (let x = 194; x < 240; x += 1) {
+        const offset = (y * raster.width + x) * 4;
+        const line = (x + y) % 6 < 2;
+        raster.data[offset] = line ? 58 : 103;
+        raster.data[offset + 1] = line ? 67 : 112;
+        raster.data[offset + 2] = line ? 45 : 72;
+      }
+    }
+    const result = analyzeBlangkoRaster(raster, { sourceWidth: 1403, sourceHeight: 992 });
+    const visual = result.visual;
+    expect(visual?.density).toHaveLength(18 * 32);
+    expect(visual?.palette.paper).toBe("#EBEBEB");
+    const quietCenter = visual!.density[16 * visual!.columns + 7];
+    const busyCorner = Math.max(...visual!.density.slice(0, visual!.columns * 3));
+    expect(busyCorner).toBeGreaterThan(quietCenter + 0.1);
+  });
+
   it("membaca resolusi JPEG dari metadata JFIF", () => {
     const bytes = new Uint8Array(18);
     const view = new DataView(bytes.buffer);

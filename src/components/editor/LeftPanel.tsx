@@ -123,7 +123,7 @@ export function LeftPanel(props: LeftPanelProps) {
               <p className="panel-hint">Smart canvas membaca rasio, metadata DPI, dan kandidat lipatan. Blangko tetap dikecualikan dari cetak isi.</p>
               <button type="button" className="secondary-button full-width" disabled={uploading || analyzing} onClick={() => blangkoInput.current?.click()}><Upload size={15} />Unggah & analisis blangko</button>
               <input ref={blangkoInput} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) props.onUpload(file, "blangko"); event.target.value = ""; }} />
-              {analyzing && <div className="inline-status"><LoaderCircle className="spin" size={15} />Menganalisis ukuran dan lipatan…</div>}
+              {analyzing && <div className="inline-status"><LoaderCircle className="spin" size={15} />Menganalisis ukuran, lipatan, dan zona tenang…</div>}
               {activeBlangko && (
                 <button type="button" className="secondary-button full-width analysis-button" disabled={analyzing} onClick={() => props.onAnalyzeBlangko(activeBlangko)}><ScanLine size={15} />{analysis ? "Analisis ulang smart canvas" : "Analisis smart canvas"}</button>
               )}
@@ -131,6 +131,7 @@ export function LeftPanel(props: LeftPanelProps) {
                 <div className="analysis-result" aria-live="polite">
                   <div><strong>{analysis.widthMm} × {analysis.heightMm} mm</strong><span>{analysis.sizeSource === "metadata-dpi" ? `Metadata ${analysis.dpi} DPI` : analysis.sizeSource === "standard-aspect" ? "Estimasi ukuran standar" : "Estimasi dari rasio"}</span></div>
                   {analysis.folds.map((fold, index) => <p key={`${fold.axis}-${index}`}>{fold.axis === "vertical" ? "Vertikal" : "Horizontal"} · {Math.round(fold.positionRatio * 100)}% · confidence {Math.round(fold.confidence * 100)}% <span>{fold.source === "layout-heuristic" ? "heuristic" : "CV"}</span></p>)}
+                  {analysis.visual && <small>Palet {analysis.visual.palette.accent} dan peta whitespace {analysis.visual.columns} × {analysis.visual.rows} siap dipakai agen.</small>}
                   {analysis.warnings.map((warning) => <small key={warning}>{warning}</small>)}
                 </div>
               )}

@@ -168,7 +168,23 @@ async function syncPhotoCraftRuntimeExclusive(options: PhotoCraftSyncOptions): P
     name: `${options.document.title} — ${side.label}`,
   });
   try {
-    if (steps.length) await session.request("batch", { steps, stopOnError: true });
+    if (steps.length) {
+      const batch = await session.request<{
+        completed?: number;
+        failed?: number;
+        results?: Array<{ ok?: boolean; error?: string }>;
+      }>("batch", { steps, stopOnError: true });
+      const failedIndex = batch.results?.findIndex((result) => result.ok === false) ?? -1;
+      if (failedIndex >= 0) {
+        const step = steps[failedIndex];
+        const command = step.method === "engine.execute" ? step.params.command : step.method;
+        const detail = batch.results?.[failedIndex]?.error || "perintah ditolak engine";
+        throw new Error(`PhotoCraft menghentikan batch pada langkah ${failedIndex + 1} (${command}): ${detail}`);
+      }
+      if (batch.results && batch.results.length !== steps.length) {
+        throw new Error(`PhotoCraft hanya menyelesaikan ${batch.results.length} dari ${steps.length} langkah batch.`);
+      }
+    }
     const [inspect, render] = await Promise.all([
       session.request("doc.inspect", { index: created.document }),
       session.request<{ mime: string; base64: string }>("doc.render", {

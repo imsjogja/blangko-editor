@@ -94,6 +94,7 @@ describe("PhotoCraft native engine compiler", () => {
     expect(params(frames[1]).path).toMatchObject({ fillRule: "nonzero" });
     expect(placements).toHaveLength(2);
     expect(placements.every((step) => params(step).fit === true)).toBe(true);
+    expect(placements.every((step) => !("center" in params(step)))).toBe(true);
   });
 
   it("preserves opacity, rotation, and node locking as real engine commands", () => {
@@ -108,7 +109,12 @@ describe("PhotoCraft native engine compiler", () => {
       "layer.lockLayers",
     ]);
     expect(params(steps[1])).toMatchObject({ layer: photoCraftLayerName("styled"), opacity: 62.5 });
-    expect(params(steps[2])).toMatchObject({ layer: photoCraftLayerName("styled"), rotate: 17, reference: "center" });
+    expect(params(steps[2])).toMatchObject({
+      layer: photoCraftLayerName("styled"),
+      rect: [118.11, 141.732, 472.441, 377.953],
+      rotate: 17,
+      reference: "center",
+    });
   });
 
   it("fails before rendering when a referenced image asset is missing", () => {

@@ -177,6 +177,138 @@ function detectFolds(
   return folds.sort((a, b) => b.confidence - a.confidence).slice(0, 2);
 }
 
+interface ColorBucket {
+  count: number;
+  score: number;
+  r: number;
+  g: number;
+  b: number;
+}
+
+function colorHex(color: { r: number; g: number; b: number }) {
+  return `#${[color.r, color.g, color.b]
+    .map((channel) => Math.round(clamp(channel, 0, 255)).toString(16).padStart(2, "0"))
+    .join("")}`.toUpperCase();
+}
+
+function relativeLuminance(color: { r: number; g: number; b: number }) {
+  const channels = [color.r, color.g, color.b].map((channel) => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+}
+
+function contrastRatio(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }) {
+  const first = relativeLuminance(a);
+  const second = relativeLuminance(b);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+}
+
+function readableColor(
+  color: { r: number; g: number; b: number },
+  paper: { r: number; g: number; b: number },
+  minimumContrast: number,
+) {
+  const result = { ...color };
+  for (let iteration = 0; iteration < 16 && contrastRatio(result, paper) < minimumContrast; iteration += 1) {
+    result.r *= 0.88;
+    result.g *= 0.88;
+    result.b *= 0.88;
+  }
+  return result;
+}
+
+function bucketColor(bucket?: ColorBucket, fallback = { r: 36, g: 39, b: 32 }) {
+  if (!bucket?.count) return fallback;
+  return { r: bucket.r / bucket.count, g: bucket.g / bucket.count, b: bucket.b / bucket.count };
+}
+
+function extractVisualPalette(raster: RasterImage) {
+  const light = new Map<number, ColorBucket>();
+  const dark = new Map<number, ColorBucket>();
+  const saturated = new Map<number, ColorBucket>();
+  const add = (map: Map<number, ColorBucket>, key: number, r: number, g: number, b: number, score: number) => {
+    const bucket = map.get(key) ?? { count: 0, score: 0, r: 0, g: 0, b: 0 };
+    bucket.count += 1;
+    bucket.score += score;
+    bucket.r += r;
+    bucket.g += g;
+    bucket.b += b;
+    map.set(key, bucket);
+  };
+
+  for (let offset = 0; offset < raster.data.length; offset += 4) {
+    if (raster.data[offset + 3] < 32) continue;
+    const r = raster.data[offset];
+    const g = raster.data[offset + 1];
+    const b = raster.data[offset + 2];
+    const maximum = Math.max(r, g, b);
+    const minimum = Math.min(r, g, b);
+    const luminance = (r * 0.2126 + g * 0.7152 + b * 0.0722) / 255;
+    const saturation = maximum ? (maximum - minimum) / maximum : 0;
+    const key = (r >> 4) << 8 | (g >> 4) << 4 | (b >> 4);
+    if (luminance > 0.62) add(light, key, r, g, b, 1 - Math.abs(luminance - 0.87));
+    if (luminance < 0.46) add(dark, key, r, g, b, 0.6 + saturation);
+    if (saturation > 0.14 && luminance > 0.14 && luminance < 0.72) {
+      add(saturated, key, r, g, b, 0.35 + saturation * 1.4);
+    }
+  }
+
+  const best = (map: Map<number, ColorBucket>) => [...map.values()]
+    .sort((a, b) => (b.score / b.count) * Math.log2(b.count + 2) - (a.score / a.count) * Math.log2(a.count + 2))[0];
+  const paper = bucketColor(best(light), { r: 244, g: 240, b: 229 });
+  const primary = readableColor(bucketColor(best(dark)), paper, 4.5);
+  const accent = readableColor(bucketColor(best(saturated), primary), paper, 2.4);
+  return { paper: colorHex(paper), primary: colorHex(primary), accent: colorHex(accent) };
+}
+
+function analyzeVisualProfile(raster: RasterImage): NonNullable<BlangkoAnalysis["visual"]> {
+  const columns = 18;
+  const rows = 32;
+  const density = new Array<number>(columns * rows).fill(0);
+  const palette = extractVisualPalette(raster);
+  const paperHex = palette.paper;
+  const paper = {
+    r: Number.parseInt(paperHex.slice(1, 3), 16),
+    g: Number.parseInt(paperHex.slice(3, 5), 16),
+    b: Number.parseInt(paperHex.slice(5, 7), 16),
+  };
+
+  for (let row = 0; row < rows; row += 1) {
+    const y0 = Math.floor(row * raster.height / rows);
+    const y1 = Math.max(y0 + 1, Math.floor((row + 1) * raster.height / rows));
+    for (let column = 0; column < columns; column += 1) {
+      const x0 = Math.floor(column * raster.width / columns);
+      const x1 = Math.max(x0 + 1, Math.floor((column + 1) * raster.width / columns));
+      let samples = 0;
+      let edgeTotal = 0;
+      let distanceTotal = 0;
+      for (let y = y0; y < Math.min(y1, raster.height); y += 1) {
+        for (let x = x0; x < Math.min(x1, raster.width); x += 1) {
+          const offset = (y * raster.width + x) * 4;
+          const right = (y * raster.width + Math.min(raster.width - 1, x + 1)) * 4;
+          const below = (Math.min(raster.height - 1, y + 1) * raster.width + x) * 4;
+          const alpha = raster.data[offset + 3] / 255;
+          const r = raster.data[offset] * alpha + 255 * (1 - alpha);
+          const g = raster.data[offset + 1] * alpha + 255 * (1 - alpha);
+          const b = raster.data[offset + 2] * alpha + 255 * (1 - alpha);
+          const gray = r * 0.2126 + g * 0.7152 + b * 0.0722;
+          const rightGray = raster.data[right] * 0.2126 + raster.data[right + 1] * 0.7152 + raster.data[right + 2] * 0.0722;
+          const belowGray = raster.data[below] * 0.2126 + raster.data[below + 1] * 0.7152 + raster.data[below + 2] * 0.0722;
+          edgeTotal += (Math.abs(rightGray - gray) + Math.abs(belowGray - gray)) / 2;
+          distanceTotal += Math.sqrt((r - paper.r) ** 2 + (g - paper.g) ** 2 + (b - paper.b) ** 2) / 255;
+          samples += 1;
+        }
+      }
+      const edge = edgeTotal / Math.max(1, samples) / 32;
+      const distance = distanceTotal / Math.max(1, samples) / 0.48;
+      density[row * columns + column] = round(clamp(edge * 0.58 + distance * 0.42), 3);
+    }
+  }
+  return { columns, rows, density, palette };
+}
+
 export function analyzeBlangkoRaster(raster: RasterImage, options: AnalysisOptions): BlangkoAnalysis {
   if (raster.width < 16 || raster.height < 16) throw new Error("Gambar terlalu kecil untuk dianalisis.");
   const size = estimatePhysicalSize(options.sourceWidth, options.sourceHeight, options.dpi);
@@ -199,6 +331,7 @@ export function analyzeBlangkoRaster(raster: RasterImage, options: AnalysisOptio
     ...size,
     confidence: round(Math.min(size.confidence, ...folds.map((fold) => fold.confidence)), 2),
     folds,
+    visual: analyzeVisualProfile(raster),
     warnings,
   };
 }

@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,6 +82,7 @@ export class PhotoCraftSession {
   private async start(): Promise<void> {
     this.root = await mkdtemp(path.join(tmpdir(), "blangko-photocraft-session-"));
     await mkdir(path.join(this.root, "assets"), { recursive: true });
+    const fontEnvironment = await prepareFontEnvironment(this.root);
     const child = spawn(this.binaryPath, [
       "serve", "--no-gpu",
       "--automation-read-root", this.root,
@@ -93,6 +94,7 @@ export class PhotoCraftSession {
         ...process.env,
         PHOTOCRAFT_NO_DESKTOP_INTEGRATION: "1",
         PHOTOCRAFT_CONFIG_DIR: path.join(this.root, "config"),
+        ...fontEnvironment,
       },
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -179,6 +181,33 @@ export class PhotoCraftSession {
     if (this.root) await rm(this.root, { recursive: true, force: true });
     this.root = null;
   }
+}
+
+function bundledFontDirectory(): string | null {
+  const candidates = [
+    path.join(process.cwd(), "public", "fonts"),
+    path.join(process.cwd(), "dist", "fonts"),
+    path.join(process.cwd(), "dist", "public", "fonts"),
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "fonts"),
+  ];
+  return candidates.find((candidate) => existsSync(path.join(candidate, "Inter-Regular.ttf"))) ?? null;
+}
+
+async function prepareFontEnvironment(root: string): Promise<Record<string, string>> {
+  const fonts = bundledFontDirectory();
+  if (!fonts) return {};
+  const escapedFonts = fonts.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll("\"", "&quot;");
+  const escapedCache = path.join(root, "font-cache").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll("\"", "&quot;");
+  const configPath = path.join(root, "fonts.conf");
+  await writeFile(configPath, `<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>
+  <dir>${escapedFonts}</dir>
+  <cachedir>${escapedCache}</cachedir>
+</fontconfig>
+`, "utf8");
+  return { FONTCONFIG_FILE: configPath, XDG_CACHE_HOME: path.join(root, "cache") };
 }
 
 async function fileExists(filePath: string): Promise<boolean> {

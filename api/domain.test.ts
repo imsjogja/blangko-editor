@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyDesignProposal,
   createInitialDocument,
   invitationDocumentSchema,
   runPreflight,
@@ -10,6 +11,7 @@ import {
   createAiProposal,
   createDeterministicProposal,
   deterministicDirection,
+  getDesignPanelMap,
 } from "./design";
 
 function confirmedDocument(): InvitationDocument {
@@ -91,5 +93,96 @@ describe("design proposals", () => {
     expect(proposal.mode).toBe("deterministic");
     expect(proposal.nodes.length).toBeGreaterThanOrEqual(4);
     expect(proposal.nodes.find((node) => node.id === "agent-title")?.text).toBe(document.design.coupleNames);
+    expect(proposal.quality?.hardGates.every((gate) => gate.passed)).toBe(true);
+  });
+
+  it("compiles distinct safe panels for horizontal folds on both sides", () => {
+    const document = confirmedDocument();
+    document.stock.width = 120;
+    document.stock.height = 200;
+    document.stock.safeMargin = 6;
+    document.sides = document.sides.map((side) => ({
+      ...side,
+      foldLines: [{ id: `horizontal-${side.id}`, axis: "horizontal", positionMm: side.id === "outside" ? 118 : 72, kind: "fold" }],
+      nodes: [],
+    }));
+
+    for (const sideId of ["outside", "inside"] as const) {
+      const panels = getDesignPanelMap(document, sideId);
+      const proposal = createDeterministicProposal(document, sideId, "rustic");
+      const candidate = applyDesignProposal(document, proposal);
+      const geometryIssues = runPreflight(candidate, sideId).filter((issue) =>
+        ["NODE_OUTSIDE", "FOLD_CLEARANCE", "SAFE_MARGIN"].includes(issue.code)
+      );
+      expect(panels.map((panel) => panel.role)).toEqual(["primary", "secondary"]);
+      expect(panels[0].y).toBeGreaterThan(0);
+      expect(panels[1].y).toBeGreaterThan(panels[0].y + panels[0].height);
+      expect(geometryIssues).toEqual([]);
+      expect(proposal.quality?.hardGates.find((gate) => gate.id === "SAFE-PANELS")?.passed).toBe(true);
+    }
+  });
+
+  it("builds a rich editable cover with an oval photo and honest structural QA", () => {
+    const document = confirmedDocument();
+    document.assets.push({
+      id: "photo-cover",
+      name: "cover.png",
+      kind: "photo",
+      source: "storage",
+      storageKey: "projects/test/cover.png",
+      contentType: "image/png",
+      width: 800,
+      height: 1000,
+    });
+    const proposal = createDeterministicProposal(document, "outside", "rustic");
+
+    expect(proposal.nodes.length).toBeGreaterThanOrEqual(18);
+    expect(proposal.nodes.find((node) => node.id === "agent-photo")?.clipShape).toBe("ellipse");
+    expect(proposal.nodes.find((node) => node.id === "agent-photo-frame")?.shapeType).toBe("ellipse");
+    expect(proposal.nodes.find((node) => node.id === "agent-date-pill")?.shapeType).toBe("rounded-rectangle");
+    expect(proposal.nodes.filter((node) => node.kind === "text").every((node) => Boolean(node.text?.trim()))).toBe(true);
+    expect(proposal.quality?.score).toBeGreaterThanOrEqual(85);
+    expect(proposal.quality?.status).toBe("needs-visual-review");
+    expect(proposal.quality?.productionStatus).toBe("not-print-ready");
+    expect(proposal.quality?.visualReviewRequired).toBe(true);
+    expect(proposal.quality?.hardGates.every((gate) => gate.passed)).toBe(true);
+  });
+
+  it("does not invent event schedules, family names, or additional ceremonies", () => {
+    const document = confirmedDocument();
+    const proposal = createDeterministicProposal(document, "inside", "classic");
+    const copy = proposal.nodes.map((node) => node.text || "").join("\n");
+
+    expect(copy).not.toMatch(/\bAKAD\b|\bRESEPSI\b|09[.:]00|orang tua|putra-putri kami/i);
+    expect(proposal.nodes.find((node) => node.id === "agent-details")?.text)
+      .toBe(`${document.design.eventDate}\n${document.design.venue}`);
+    expect(proposal.nodes.find((node) => node.id === "agent-title")?.text)
+      .toBe(document.design.coupleNames);
+  });
+
+  it("preserves nodes created after a proposal and never replaces the blangko binding", () => {
+    const document = confirmedDocument();
+    const proposal = createDeterministicProposal(document, "outside", "modern");
+    const current = structuredClone(document);
+    const originalBlangko = current.sides[0].blangkoAssetId;
+    current.sides[0].nodes.push({
+      id: "user-added-after-proposal",
+      kind: "shape",
+      role: "CONTENT",
+      box: { x: 20, y: 20, width: 12, height: 12 },
+      rotation: 0,
+      visible: true,
+      locked: false,
+      opacity: 1,
+      zIndex: 8,
+      backgroundColor: "#202522",
+    });
+
+    const applied = applyDesignProposal(current, proposal);
+    const outside = applied.sides[0];
+    expect(outside.nodes.some((node) => node.id === "user-added-after-proposal")).toBe(true);
+    expect(outside.nodes.some((node) => node.id === "outside-eyebrow")).toBe(false);
+    expect(outside.nodes.some((node) => node.id === "agent-title")).toBe(true);
+    expect(outside.blangkoAssetId).toBe(originalBlangko);
   });
 });

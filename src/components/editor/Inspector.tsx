@@ -76,11 +76,27 @@ export function Inspector(props: InspectorProps) {
                   <label className="field-label">Ketebalan<select value={selectedNode.fontWeight || 400} onChange={(event) => props.onUpdateNode(selectedNode.id, { fontWeight: Number(event.target.value) })}><option value="400">Regular</option><option value="600">Semibold</option><option value="700">Bold</option></select></label>
                   <label className="field-label">Perataan<select value={selectedNode.textAlign || "left"} onChange={(event) => props.onUpdateNode(selectedNode.id, { textAlign: event.target.value as DesignNode["textAlign"] })}><option value="left">Kiri</option><option value="center">Tengah</option><option value="right">Kanan</option></select></label>
                 </div>
-                <label className="color-field">Warna teks<input type="color" value={selectedNode.color || "#2D2A26"} onChange={(event) => props.onUpdateNode(selectedNode.id, { color: event.target.value })} /><code>{selectedNode.color || "#2D2A26"}</code></label>
+                <div className="field-grid two-cols">
+                  <label className="field-label">Gaya<select value={selectedNode.fontStyle || "normal"} onChange={(event) => props.onUpdateNode(selectedNode.id, { fontStyle: event.target.value as DesignNode["fontStyle"] })}><option value="normal">Normal</option><option value="italic">Italic</option></select></label>
+                  <label className="field-label">Tracking<input type="number" min="-5" max="20" step="0.1" value={selectedNode.letterSpacing || 0} onChange={(event) => props.onUpdateNode(selectedNode.id, { letterSpacing: Number(event.target.value) })} /><span>pt</span></label>
+                </div>
+                <label className="color-field">Warna teks<input type="color" value={safeColor(selectedNode.color, "#2D2A26")} onChange={(event) => props.onUpdateNode(selectedNode.id, { color: event.target.value })} /><code>{selectedNode.color || "#2D2A26"}</code></label>
               </section>
             )}
 
-            {selectedNode.kind === "shape" && <section className="panel-section"><label className="color-field">Warna bidang<input type="color" value={selectedNode.backgroundColor || "#6E7254"} onChange={(event) => props.onUpdateNode(selectedNode.id, { backgroundColor: event.target.value })} /><code>{selectedNode.backgroundColor}</code></label></section>}
+            {selectedNode.kind === "shape" && (
+              <section className="panel-section panel-section-stack">
+                <label className="field-label">Bentuk<select value={selectedNode.shapeType || "rectangle"} onChange={(event) => props.onUpdateNode(selectedNode.id, { shapeType: event.target.value as DesignNode["shapeType"] })}><option value="rectangle">Kotak / garis</option><option value="ellipse">Ellipse</option><option value="rounded-rectangle">Kotak membulat</option></select></label>
+                {selectedNode.shapeType === "rounded-rectangle" && <label className="field-label">Radius<input type="number" min="0" step="0.5" value={selectedNode.cornerRadius ?? 3} onChange={(event) => props.onUpdateNode(selectedNode.id, { cornerRadius: Number(event.target.value) })} /><span>mm</span></label>}
+                <label className="color-field">Warna bidang<input type="color" value={safeColor(selectedNode.backgroundColor, "#6E7254")} onChange={(event) => props.onUpdateNode(selectedNode.id, { backgroundColor: event.target.value })} /><code>{selectedNode.backgroundColor}</code></label>
+              </section>
+            )}
+
+            {selectedNode.kind === "image" && (
+              <section className="panel-section">
+                <label className="field-label">Clipping<select value={selectedNode.clipShape || "rectangle"} onChange={(event) => props.onUpdateNode(selectedNode.id, { clipShape: event.target.value as DesignNode["clipShape"] })}><option value="rectangle">Kotak</option><option value="ellipse">Oval / ellipse</option><option value="rounded-rectangle">Kotak membulat</option></select></label>
+              </section>
+            )}
 
             <section className="panel-section">
               <label className="range-label">Opasitas <span>{Math.round(selectedNode.opacity * 100)}%</span><input type="range" min="0.05" max="1" step="0.05" value={selectedNode.opacity} onChange={(event) => props.onUpdateNode(selectedNode.id, { opacity: Number(event.target.value) })} /></label>
@@ -128,4 +144,8 @@ export function Inspector(props: InspectorProps) {
 
 function onAddNodeSafe(props: InspectorProps, kind: "text" | "shape") {
   props.onAddNode(kind);
+}
+
+function safeColor(value: string | undefined, fallback: string): string {
+  return value && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
 }

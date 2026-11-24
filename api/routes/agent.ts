@@ -10,7 +10,7 @@ import {
   sideIdSchema,
 } from "@contracts/invitation";
 import { createKimiGateway, listModels, classifyAiError, AiMisconfigured, AiUnavailable, ContentRejected } from "../ai/ai-client";
-import { createAiProposal, createDeterministicProposal } from "../design";
+import { createAiProposal, createDeterministicProposal, getDesignPanelMap } from "../design";
 
 export const agentRoutes = new Hono();
 
@@ -66,14 +66,32 @@ agentRoutes.post("/run", async (c) => {
 
       let proposal;
       const warnings: string[] = [];
+      const activeBlangko = document.assets.find((asset) =>
+        asset.id === document.sides.find((side) => side.id === request.sideId)?.blangkoAssetId
+      );
+      const designContext = {
+        side: request.sideId,
+        style: request.style,
+        physicalCanvasMm: { width: document.stock.width, height: document.stock.height },
+        safeMarginMm: document.stock.safeMargin,
+        physicalSizeConfirmed: document.stock.physicalSizeConfirmed,
+        panels: getDesignPanelMap(document, request.sideId),
+        blangkoAnalysis: activeBlangko?.analysis ?? null,
+        assetInventory: {
+          photos: document.assets.filter((asset) => asset.kind === "photo").length,
+          ornaments: document.assets.filter((asset) => asset.kind === "ornament").length,
+          maps: document.assets.filter((asset) => asset.kind === "map").length,
+        },
+        visualInput: "Model tidak menerima piksel blangko; gunakan metadata ini tanpa mengklaim inspeksi gambar.",
+      };
       try {
         const { defaultModelId } = await listModels();
         const gateway = createKimiGateway();
         const result = await generateObject({
           model: gateway(defaultModelId),
           schema: designDirectionSchema,
-          system: "Anda adalah art director undangan cetak. Berikan arahan visual yang ringkas, bukan analisis produksi. Field summary hanya untuk ringkasan desain. Field content.eyebrow berisi label undangan singkat; content.subtitle berisi satu kalimat ajakan hangat untuk tamu, maksimal 180 karakter; content.body tidak akan dicetak dari jawaban Anda. Jangan menaruh ukuran, koordinat, preflight, warna, font, catatan lipatan, atau instruksi produksi di field content. Nama pasangan, tanggal, dan venue akan diambil langsung dari data proyek. Warna harus hex enam digit. Gunakan font Georgia atau Arial. Hindari teks pada garis lipat.",
-          prompt: `Gaya: ${request.style}. Sisi: ${request.sideId}. Nama: ${document.design.coupleNames}. Acara: ${document.design.eventDate}. Lokasi: ${document.design.venue}. Permintaan pengguna: ${request.prompt || "Tidak ada tambahan"}. Hasil preflight: ${JSON.stringify(issues)}`,
+          system: "Anda adalah art director sekaligus layout engineer untuk undangan blangko. Berikan arahan visual yang dapat dikompilasi menjadi scene editable, bukan analisis produksi. Audit peta panel dan pertahankan maksimal dua focal point per panel: foto/monogram dan nama. Sisi luar memprioritaskan cover serta panel kutipan; sisi dalam memprioritaskan pembuka serta rincian acara. Blangko tidak boleh diganti dan latarnya harus tetap terlihat. Field summary hanya berisi ringkasan desain tanpa klaim telah melihat gambar atau kesiapan cetak. Field content.eyebrow berisi label singkat; content.subtitle berisi satu kalimat ajakan hangat maksimal 180 karakter; content.body tidak dicetak dari jawaban Anda. Jangan menaruh ukuran, koordinat, preflight, warna, font, catatan lipatan, atau instruksi produksi di field content. Nama pasangan, tanggal, dan venue selalu diambil dari data proyek. Jangan mengarang waktu, orang tua, akad, resepsi, atau alamat tambahan. Warna harus hex enam digit dan merupakan hipotesis sampai tinjauan komposit. Gunakan font Georgia atau Arial.",
+          prompt: `Konteks terstruktur: ${JSON.stringify(designContext)}\nNama: ${document.design.coupleNames}. Acara: ${document.design.eventDate}. Lokasi: ${document.design.venue}.\nPermintaan pengguna: ${request.prompt || "Tidak ada tambahan"}.\nHasil preflight awal: ${JSON.stringify(issues)}`, 
         });
         proposal = createAiProposal(document, request.sideId, request.style, result.object);
       } catch (error) {
@@ -84,6 +102,7 @@ agentRoutes.post("/run", async (c) => {
             request.sideId,
             request.style,
             "Model AI belum diprovisikan; proposal ini dibuat dengan skill deterministik lokal.",
+            request.prompt,
           );
         } else if (classified instanceof AiUnavailable) {
           throw new Error("Kuota AI tidak tersedia. Coba lagi setelah kuota situs diisi.");
@@ -96,6 +115,11 @@ agentRoutes.post("/run", async (c) => {
 
       if (issues.some((issue) => issue.code === "SIZE_UNCONFIRMED")) {
         warnings.push("Ukuran fisik blangko belum dikonfirmasi; lakukan kalibrasi sebelum ekspor cetak.");
+      }
+      if (activeBlangko?.analysis?.folds.some((fold) => fold.source === "layout-heuristic")) {
+        warnings.push("Sebagian garis lipat berasal dari heuristic, bukan deteksi edge; verifikasi terhadap blangko fisik.");
+      } else if (activeBlangko?.analysis?.folds.some((fold) => fold.confidence < 0.6)) {
+        warnings.push("Confidence kandidat lipatan rendah; periksa guides sebelum mengunci layout produksi.");
       }
       proposal.warnings.push(...warnings);
 
@@ -110,7 +134,7 @@ agentRoutes.post("/run", async (c) => {
       await send(event("TEXT_MESSAGE_START", { messageId, role: "assistant" }));
       await send(event("TEXT_MESSAGE_CONTENT", {
         messageId,
-        delta: `${proposal.summary}\n\nMode: ${proposal.mode === "ai" ? "AI" : "skill deterministik"}. Tinjau proposal lalu klik Terapkan.`,
+        delta: `${proposal.summary}\n\nMode: ${proposal.mode === "ai" ? "AI" : "skill deterministik"}. Skor struktur: ${proposal.quality?.score ?? "—"}/100. Tinjau komposit secara visual lalu klik Terapkan; status produksi belum print-ready.`, 
       }));
       await send(event("TEXT_MESSAGE_END", { messageId }));
       await send(event("RUN_FINISHED", { threadId, runId }));

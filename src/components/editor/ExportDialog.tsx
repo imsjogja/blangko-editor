@@ -53,7 +53,7 @@ export function ExportDialog({ document, sideId, issues, exporting, onClose, onE
               <button type="button" className={includeBlangko ? "export-option active" : "export-option"} onClick={() => setIncludeBlangko(true)}><strong>Preview komposit</strong><span>Blangko dan desain digabung untuk tinjauan visual.</span></button>
             </div></fieldset>
             <div className="field-grid two-cols">
-              <label className="field-label">Format<select value={format} onChange={(event) => setFormat(event.target.value as "pdf" | "png")}><option value="pdf">PDF siap cetak</option><option value="png">PNG {document.stock.targetPpi} ppi</option></select></label>
+              <label className="field-label">Format<select value={format} onChange={(event) => setFormat(event.target.value as "pdf" | "png")}><option value="pdf">PDF ukuran fisik</option><option value="png">PNG {document.stock.targetPpi} ppi</option></select></label>
               <label className="field-label">Sisi<select value={allSides ? "all" : "current"} onChange={(event) => setAllSides(event.target.value === "all")}><option value="all">Luar & dalam</option><option value="current">Sisi {sideId === "outside" ? "luar" : "dalam"} saja</option></select></label>
             </div>
             <div className="export-spec"><span>{document.stock.width} × {document.stock.height} mm</span><span>{document.stock.targetPpi} ppi</span><span>Skala 100%</span></div>

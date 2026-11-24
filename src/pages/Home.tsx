@@ -4,6 +4,7 @@ import { BookOpen, Check, Cloud, CloudOff, Download, LoaderCircle, PanelLeftClos
 import { toast, Toaster } from "sonner";
 import type { BaseEvent } from "@ag-ui/core";
 import {
+  applyDesignProposal,
   createInitialDocument,
   getSide,
   invitationDocumentSchema,
@@ -375,11 +376,7 @@ export default function Home() {
   const applyProposal = () => {
     if (!proposal) return;
     const current = documentRef.current;
-    changeDocument({
-      ...current,
-      design: { ...current.design, style: proposal.style },
-      sides: current.sides.map((side) => side.id === proposal.sideId ? { ...side, nodes: proposal.nodes } : side),
-    });
+    changeDocument(applyDesignProposal(current, proposal));
     setSideId(proposal.sideId);
     setSelectedNodeId(null);
     setProposal(null);

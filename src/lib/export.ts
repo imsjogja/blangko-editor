@@ -66,6 +66,35 @@ function wrapText(context: CanvasRenderingContext2D, text: string, maxWidth: num
   return lines;
 }
 
+function traceGeometry(
+  context: CanvasRenderingContext2D,
+  geometry: DesignNode["shapeType"] | DesignNode["clipShape"],
+  width: number,
+  height: number,
+  cornerRadius: number,
+) {
+  context.beginPath();
+  if (geometry === "ellipse") {
+    context.ellipse(width / 2, height / 2, width / 2, Math.max(0.5, height / 2), 0, 0, Math.PI * 2);
+    return;
+  }
+  if (geometry === "rounded-rectangle") {
+    const radius = Math.max(0, Math.min(cornerRadius, width / 2, height / 2));
+    context.moveTo(radius, 0);
+    context.lineTo(width - radius, 0);
+    context.quadraticCurveTo(width, 0, width, radius);
+    context.lineTo(width, height - radius);
+    context.quadraticCurveTo(width, height, width - radius, height);
+    context.lineTo(radius, height);
+    context.quadraticCurveTo(0, height, 0, height - radius);
+    context.lineTo(0, radius);
+    context.quadraticCurveTo(0, 0, radius, 0);
+    context.closePath();
+    return;
+  }
+  context.rect(0, 0, width, height);
+}
+
 function drawNode(
   context: CanvasRenderingContext2D,
   node: DesignNode,
@@ -84,15 +113,16 @@ function drawNode(
 
   if (node.kind === "shape") {
     context.fillStyle = node.backgroundColor || "#6E7254";
-    context.fillRect(0, 0, width, Math.max(height, 1));
+    traceGeometry(context, node.shapeType, width, Math.max(height, 1), mmToPx(node.cornerRadius ?? 3, dpi));
+    if (node.backgroundColor !== "transparent") context.fill();
     if (node.borderWidth && node.borderColor) {
       context.strokeStyle = node.borderColor;
       context.lineWidth = mmToPx(node.borderWidth, dpi);
-      context.strokeRect(0, 0, width, height);
+      traceGeometry(context, node.shapeType, width, Math.max(height, 1), mmToPx(node.cornerRadius ?? 3, dpi));
+      context.stroke();
     }
   } else if (node.kind === "image" && image) {
-    context.beginPath();
-    context.rect(0, 0, width, height);
+    traceGeometry(context, node.clipShape, width, height, mmToPx(node.cornerRadius ?? 3, dpi));
     context.clip();
     drawImageCover(context, image, 0, 0, width, height);
   } else if (node.kind === "text") {
@@ -102,7 +132,9 @@ function drawNode(
     context.rect(0, 0, width, height);
     context.clip();
     context.fillStyle = node.color || "#2D2A26";
-    context.font = `${node.fontWeight || 400} ${fontSize}px ${node.fontFamily || "Arial"}`;
+    context.font = `${node.fontStyle || "normal"} ${node.fontWeight || 400} ${fontSize}px ${node.fontFamily || "Arial"}`;
+    (context as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing =
+      `${(node.letterSpacing || 0) / 72 * dpi}px`;
     context.textAlign = node.textAlign || "left";
     context.textBaseline = "top";
     const lines = wrapText(context, node.text || "", width);

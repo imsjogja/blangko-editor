@@ -205,7 +205,19 @@ export function LeftPanel(props: LeftPanelProps) {
                 <div className="proposal-heading"><span className={proposal.mode === "ai" ? "mode-badge ai" : "mode-badge"}>{proposal.mode === "ai" ? "AI" : "SKILL"}</span><button type="button" className="icon-button" onClick={props.onDismissProposal} aria-label="Tutup proposal"><X size={15} /></button></div>
                 <h3>Proposal {proposal.sideId === "outside" ? "Luar" : "Dalam"}</h3>
                 <p>{proposal.summary}</p>
-                <span className="proposal-count">{proposal.nodes.length} objek desain</span>
+                <span className="proposal-count">{proposal.nodes.length} objek editable</span>
+                {proposal.quality && (
+                  <div className="proposal-quality" aria-label="Penilaian struktural proposal">
+                    <div className="quality-score"><strong>{proposal.quality.score}<span>/100</span></strong><span>Skor struktur</span></div>
+                    <span className={`quality-status ${proposal.quality.status}`}>
+                      {proposal.quality.status === "needs-revision" ? "Perlu revisi struktur" : proposal.quality.status === "approved-for-preview" ? "Preview disetujui" : "Perlu tinjauan visual"}
+                    </span>
+                    <div className="quality-gates">
+                      {proposal.quality.hardGates.map((gate) => <span key={gate.id} className={gate.passed ? "passed" : "failed"}>{gate.passed ? <Check size={11} /> : <X size={11} />}{gate.label}</span>)}
+                    </div>
+                    <p>Belum print-ready. Skor struktur tidak menggantikan inspeksi komposit dan preflight fisik.</p>
+                  </div>
+                )}
                 {proposal.warnings.map((warning) => <div className="warning-copy" key={warning}>{warning}</div>)}
                 <button type="button" className="primary-button full-width" onClick={props.onApplyProposal}><Check size={16} />Terapkan proposal</button>
               </section>

@@ -24,11 +24,20 @@ export const designNodeSchema = z.object({
   fontSize: z.number().min(4).max(240).optional(),
   fontFamily: z.string().max(120).optional(),
   fontWeight: z.number().int().min(300).max(900).optional(),
+  fontStyle: z.enum(["normal", "italic"]).optional(),
   textAlign: z.enum(["left", "center", "right"]).optional(),
+  letterSpacing: z.number().min(-5).max(20).optional(),
   color: z.string().max(32).optional(),
   backgroundColor: z.string().max(32).optional(),
   borderColor: z.string().max(32).optional(),
   borderWidth: z.number().min(0).max(30).optional(),
+  shapeType: z.enum(["rectangle", "ellipse", "rounded-rectangle"]).optional(),
+  clipShape: z.enum(["rectangle", "ellipse", "rounded-rectangle"]).optional(),
+  cornerRadius: z.number().min(0).max(500).optional(),
+  semanticRole: z.enum([
+    "photo", "frame", "eyebrow", "title", "subtitle", "body", "details",
+    "date", "venue", "quote", "monogram", "divider", "ornament", "card", "label",
+  ]).optional(),
   assetId: z.string().optional(),
 });
 
@@ -128,6 +137,25 @@ export const designDirectionSchema = z.object({
 
 export type DesignDirection = z.infer<typeof designDirectionSchema>;
 
+export const proposalQualitySchema = z.object({
+  score: z.number().min(0).max(100),
+  status: z.enum(["needs-revision", "needs-visual-review", "approved-for-preview"]),
+  productionStatus: z.enum(["not-print-ready", "print-ready"]),
+  visualReviewRequired: z.boolean(),
+  categories: z.array(z.object({
+    id: z.string(),
+    label: z.string(),
+    score: z.number().min(0),
+    maxScore: z.number().positive(),
+  })).length(5),
+  hardGates: z.array(z.object({
+    id: z.string(),
+    label: z.string(),
+    passed: z.boolean(),
+  })).min(1),
+  notes: z.array(z.string()).max(8),
+});
+
 export const designProposalSchema = z.object({
   id: z.string(),
   mode: z.enum(["ai", "deterministic"]),
@@ -135,9 +163,12 @@ export const designProposalSchema = z.object({
   sideId: sideIdSchema,
   style: designStyleSchema,
   nodes: z.array(designNodeSchema),
+  baseNodeIds: z.array(z.string()).optional(),
+  quality: proposalQualitySchema.optional(),
   warnings: z.array(z.string()),
 });
 
+export type ProposalQuality = z.infer<typeof proposalQualitySchema>;
 export type DesignProposal = z.infer<typeof designProposalSchema>;
 
 export interface PreflightIssue {
@@ -151,6 +182,25 @@ export function getSide(document: InvitationDocument, sideId: SideId): Invitatio
   const side = document.sides.find((item) => item.id === sideId);
   if (!side) throw new Error(`Sisi ${sideId} tidak ditemukan`);
   return side;
+}
+
+export function applyDesignProposal(
+  document: InvitationDocument,
+  proposal: DesignProposal,
+): InvitationDocument {
+  return {
+    ...document,
+    design: { ...document.design, style: proposal.style },
+    sides: document.sides.map((side) => {
+      if (side.id !== proposal.sideId) return side;
+      const proposalNodeIds = new Set(proposal.nodes.map((node) => node.id));
+      const replacedNodeIds = new Set(proposal.baseNodeIds ?? side.nodes.map((node) => node.id));
+      const retainedNodes = side.nodes.filter((node) =>
+        !replacedNodeIds.has(node.id) && !proposalNodeIds.has(node.id)
+      );
+      return { ...side, nodes: [...retainedNodes, ...proposal.nodes] };
+    }),
+  };
 }
 
 export function runPreflight(document: InvitationDocument, sideId: SideId): PreflightIssue[] {

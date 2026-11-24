@@ -4,6 +4,13 @@ import { Eye, EyeOff, Maximize2, Minus, Plus } from "lucide-react";
 import { getSide, type DesignNode, type InvitationDocument, type SideId } from "@contracts/invitation";
 import type { AssetUrlMap } from "@/lib/builtin-assets";
 
+function nodeBorderRadius(node: DesignNode, scale: number): string | undefined {
+  const geometry = node.kind === "shape" ? node.shapeType : node.kind === "image" ? node.clipShape : undefined;
+  if (geometry === "ellipse") return "50%";
+  if (geometry === "rounded-rectangle") return `${(node.cornerRadius ?? 3) * scale}px`;
+  return undefined;
+}
+
 interface CanvasEditorProps {
   document: InvitationDocument;
   sideId: SideId;
@@ -119,9 +126,12 @@ export function CanvasEditor(props: CanvasEditorProps) {
                   color: node.color,
                   backgroundColor: node.kind === "shape" ? node.backgroundColor : undefined,
                   border: node.borderWidth ? `${node.borderWidth * scale}px solid ${node.borderColor}` : undefined,
+                  borderRadius: nodeBorderRadius(node, scale),
                   fontFamily: node.fontFamily,
                   fontWeight: node.fontWeight,
+                  fontStyle: node.fontStyle,
                   fontSize: fontSize(node),
+                  letterSpacing: node.letterSpacing ? node.letterSpacing * 25.4 / 72 * scale : undefined,
                   textAlign: node.textAlign,
                 }}
                 onClick={(event) => { event.stopPropagation(); onSelectNode(node.id); }}

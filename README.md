@@ -10,12 +10,12 @@ Editor layout undangan berbasis blangko kosong dengan pemisahan tegas antara **r
 4. Analisis browser membaca EXIF, JPEG JFIF, atau PNG pHYs untuk DPI, mengenali rasio ukuran standar, dan mencari kandidat lipatan melalui proyeksi edge. Smart canvas menyesuaikan ukuran kertas, node, tipografi, dan guides secara proporsional.
 5. Pengguna dapat:
    - drag, resize, dan rotate objek;
-   - mengatur teks, tipografi, warna, opacity, visibilitas, dan urutan layer;
+   - mengatur teks, tipografi, italic, tracking, bentuk, oval clipping, warna, opacity, visibilitas, dan urutan layer;
    - menganalisis ulang blangko serta mengoreksi ukuran/lipatan secara manual;
    - menghapus aset dari proyek beserta node terkait, lalu membatalkannya dengan undo;
    - meminta proposal Modern, Rustic, atau Klasik melalui AG-UI;
    - meninjau lalu menerapkan proposal secara eksplisit.
-6. Preflight memeriksa kalibrasi ukuran, objek keluar kertas, safe margin, jarak lipatan, aset hilang, dan teks terlalu kecil.
+6. Preflight memeriksa kalibrasi ukuran, objek keluar kertas, safe margin, jarak lipatan, aset hilang, dan teks terlalu kecil. Proposal agen juga membawa QA struktural 100 poin dengan hard gate; skor ini tidak menggantikan inspeksi visual atau mengubah status produksi menjadi print-ready.
 7. Output diekspor sebagai:
    - **Cetak isi**: hanya node desain, tanpa blangko dan guides;
    - **Preview komposit**: blangko dan desain isi digabung untuk tinjauan visual;
@@ -66,6 +66,18 @@ Sumber kebenaran adalah dokumen undangan ber-Zod di `contracts/invitation.ts`, b
 Proposal tidak pernah langsung menimpa canvas. Pengguna harus memilih **Terapkan proposal**. Nama pasangan, tanggal, dan venue diambil dari data proyek saat node proposal dibentuk sehingga model tidak dapat mengubah fakta acara.
 
 Jika model belum diprovisikan, tersedia generator deterministik berlabel **SKILL**. Gangguan atau kuota AI tidak dicoba ulang otomatis untuk menghindari potensi penagihan ganda.
+
+### Design Director yang diadaptasi
+
+Prinsip paket `blanko-design-director` diterapkan ke arsitektur aplikasi, bukan menggantikan canonical `InvitationDocument` dengan schema upload:
+
+- compiler membentuk peta panel dari lipatan vertikal dan horizontal;
+- sisi luar memiliki cover serta panel kutipan/monogram, sedangkan sisi dalam memiliki pembuka serta rincian acara;
+- foto oval, frame, date pill, kartu rincian, divider, monogram, dan aksen botanical tetap berupa semantic nodes yang editable;
+- nama, tanggal, dan venue selalu dibaca dari dokumen; generator tidak menambahkan waktu, orang tua, akad, resepsi, atau alamat yang tidak tersedia;
+- model menerima metadata CV dan peta panel, bukan piksel blangko, sehingga prompt melarang klaim inspeksi gambar yang tidak terjadi;
+- `baseNodeIds` membatasi penggantian saat proposal diterapkan sehingga node yang dibuat setelah proposal tetap dipertahankan;
+- `approved-for-preview` tidak diberikan otomatis. Proposal baru berstatus `needs-visual-review` jika skor struktur ≥85 dan seluruh hard gate lolos; status produksinya tetap `not-print-ready`.
 
 ## Menjalankan proyek
 
@@ -132,7 +144,8 @@ contracts/photocraft.ts       Compiler semantic command PhotoCraft
 api/photocraft/runtime.ts     Process runner CLI dengan timeout dan cleanup
 api/routes/photocraft.ts      Status dan handoff PhotoCraft
 api/routes/agent.ts           AG-UI SSE dan orkestrasi proposal
-api/design.ts                 Skill deterministik dan sanitasi arahan AI
+api/design.ts                 Design director, panel map, dan compiler layout editable
+api/design-quality.ts         QA struktural 100 poin dan hard gate proposal
 api/project-router.ts         Project CRUD dan upload aset
 api/routes/project-assets.ts  Read-only same-origin asset delivery
 api/queries/projects.ts       Drizzle queries dan optimistic revision
@@ -147,6 +160,7 @@ src/lib/export.ts             Renderer Canvas 2D, PDF, PNG, master JSON
 
 - **PhotoCraft belum menjadi runtime editor dan binary asli belum dibundel.** Integrasi awal menyediakan CLI handoff raster dan semantic manifest; editable layers penuh serta WASM canvas belum diterapkan.
 - **Analisis blangko bersifat decision support.** Metadata DPI menghasilkan ukuran fisik terukur, tetapi rasio standar/aspect-preserved tetap berupa estimasi. Kandidat lipatan dari CV dan fallback heuristic harus diperiksa terhadap blangko fisik sebelum produksi.
+- **QA proposal bersifat struktural.** Skor tinggi tidak membuktikan estetika, keterbacaan aktual, kesesuaian warna dengan blangko, atau kesiapan produksi. Tinjau komposit secara visual dan lakukan verifikasi fisik terpisah.
 - PDF berisi raster 300/600 ppi pada halaman berukuran tepat. Ini **belum PDF/X**, belum separasi CMYK, dan teks tidak berupa vektor.
 - Backend saat ini db-only tanpa autentikasi. Project UUID cocok untuk MVP anonim, tetapi autentikasi, ownership, dan otorisasi perlu ditambahkan sebelum multi-user produksi.
 - Runtime AI, object storage, dan situs yang dipublikasikan dapat menggunakan kuota pemilik situs serta menimbulkan biaya sesuai penggunaan.

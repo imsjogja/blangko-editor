@@ -209,6 +209,17 @@ code, kbd, .mono { font-family: "Fira Code", "Courier New", monospace; }
 .proposal-panel h3 { margin: 10px 0 7px; font-size: 15px; }
 .proposal-panel p { color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
 .proposal-count { display: block; margin: 10px 0; color: var(--text-muted); font-size: 10px; }
+.proposal-quality { margin: 10px 0; padding: 10px 0; border-top: 1px solid var(--component-border); border-bottom: 1px solid var(--component-border); }
+.quality-score { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.quality-score strong { color: var(--text-primary); font-size: 22px; font-weight: 500; }
+.quality-score strong span { color: var(--text-muted); font-size: 10px; }
+.quality-score > span { color: var(--text-muted); font-size: 10px; }
+.quality-status { display: inline-block; margin: 7px 0; color: var(--action-primary-hover); font-size: 10px; font-weight: 600; }
+.quality-status.needs-revision { color: var(--status-error); }
+.quality-gates { display: grid; gap: 4px; margin-top: 5px; }
+.quality-gates span { display: flex; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 9px; }
+.quality-gates .failed { color: var(--status-error); }
+.proposal-quality p { margin: 9px 0 0; font-size: 10px; }
 .warning-copy { margin: 8px 0; padding: 8px; background: oklch(0.28 0.04 65); color: var(--primitive-cream-100); font-size: 10px; }
 .proposal-panel .primary-button { margin-top: 10px; }
 
@@ -234,7 +245,7 @@ code, kbd, .mono { font-family: "Fira Code", "Courier New", monospace; }
 .fold-guide span { position: absolute; top: 5px; left: 5px; padding: 2px 4px; background: var(--surface-app); font: 8px/1 "Fira Code", monospace; letter-spacing: .1em; }
 .design-node { position: absolute; display: flex; flex-direction: column; justify-content: center; white-space: pre-wrap; overflow: hidden; line-height: 1.35; cursor: move; transform-origin: center; user-select: none; }
 .design-node.text { word-break: break-word; }
-.design-node.image img { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+.design-node.image img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; pointer-events: none; }
 .design-node.image span { align-items: center; color: #6A6359; font-size: 11px; }
 .design-node.selected { outline: 1px solid var(--action-primary); }
 .design-node.locked { cursor: not-allowed; }

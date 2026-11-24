@@ -26,6 +26,12 @@ function scaleNode(node: DesignNode, scaleX: number, scaleY: number): DesignNode
       height: round(node.box.height * scaleY),
     },
     fontSize: node.fontSize ? round(clamp(node.fontSize * fontScale, 4, 240), 1) : undefined,
+    letterSpacing: node.letterSpacing !== undefined
+      ? round(clamp(node.letterSpacing * fontScale, -5, 20), 1)
+      : undefined,
+    cornerRadius: node.cornerRadius !== undefined
+      ? round(clamp(node.cornerRadius * fontScale, 0, 500))
+      : undefined,
   };
 }
 

@@ -32,6 +32,23 @@ export const designNodeSchema = z.object({
   assetId: z.string().optional(),
 });
 
+export const blangkoAnalysisSchema = z.object({
+  widthMm: z.number().min(20).max(2000),
+  heightMm: z.number().min(20).max(2000),
+  sizeSource: z.enum(["metadata-dpi", "standard-aspect", "aspect-preserved"]),
+  dpi: z.number().positive().max(2400).optional(),
+  confidence: z.number().min(0).max(1),
+  folds: z.array(z.object({
+    axis: z.enum(["vertical", "horizontal"]),
+    positionRatio: z.number().min(0.05).max(0.95),
+    confidence: z.number().min(0).max(1),
+    source: z.enum(["edge-projection", "layout-heuristic"]),
+  })).max(4),
+  warnings: z.array(z.string().max(240)).max(8),
+});
+
+export type BlangkoAnalysis = z.infer<typeof blangkoAnalysisSchema>;
+
 export const projectAssetSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1).max(255),
@@ -42,6 +59,7 @@ export const projectAssetSchema = z.object({
   contentType: z.string().optional(),
   width: z.number().int().positive().optional(),
   height: z.number().int().positive().optional(),
+  analysis: blangkoAnalysisSchema.optional(),
 });
 
 export const foldLineSchema = z.object({

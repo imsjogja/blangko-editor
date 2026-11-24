@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Bot, Check, FileImage, FolderCog, ImagePlus, LoaderCircle, Sparkles, Upload, X } from "lucide-react";
+import { Bot, Check, FileImage, FolderCog, ImagePlus, LoaderCircle, ScanLine, Sparkles, Trash2, Upload, X } from "lucide-react";
 import {
   getSide,
   type DesignProposal,
@@ -9,6 +9,7 @@ import {
   type SideId,
 } from "@contracts/invitation";
 import type { AssetUrlMap } from "@/lib/builtin-assets";
+import { resizeSmartCanvas } from "@contracts/smart-canvas";
 
 export interface AgentProgress {
   stage: string;
@@ -21,6 +22,7 @@ interface LeftPanelProps {
   sideId: SideId;
   assets: AssetUrlMap;
   uploading: boolean;
+  analyzing: boolean;
   agentRunning: boolean;
   agentProgress: AgentProgress[];
   proposal: DesignProposal | null;
@@ -28,6 +30,8 @@ interface LeftPanelProps {
   onUpload: (file: File, kind: ProjectAsset["kind"]) => void;
   onInsertAsset: (asset: ProjectAsset) => void;
   onUseBlangko: (asset: ProjectAsset) => void;
+  onAnalyzeBlangko: (asset: ProjectAsset) => void;
+  onRemoveAsset: (asset: ProjectAsset) => void;
   onGenerate: (style: DesignStyle, prompt: string) => void;
   onApplyProposal: () => void;
   onDismissProposal: () => void;
@@ -42,14 +46,21 @@ const styles: Array<{ id: DesignStyle; label: string; detail: string }> = [
 export function LeftPanel(props: LeftPanelProps) {
   const [tab, setTab] = useState<"project" | "assets" | "agent">("project");
   const [assetKind, setAssetKind] = useState<ProjectAsset["kind"]>("photo");
+  const [removeCandidate, setRemoveCandidate] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("Buat nama pasangan sebagai fokus utama dan jauhkan semua teks dari lipatan.");
   const blangkoInput = useRef<HTMLInputElement>(null);
   const assetInput = useRef<HTMLInputElement>(null);
-  const { document, sideId, assets, uploading, agentRunning, agentProgress, proposal } = props;
+  const { document, sideId, assets, uploading, analyzing, agentRunning, agentProgress, proposal } = props;
   const side = getSide(document, sideId);
+  const activeBlangko = document.assets.find((asset) => asset.id === side.blangkoAssetId);
+  const analysis = activeBlangko?.analysis;
   const latestProgress = agentProgress.at(-1);
 
   const updateStock = (key: keyof InvitationDocument["stock"], value: number | boolean) => {
+    if ((key === "width" || key === "height") && typeof value === "number") {
+      props.onChange(resizeSmartCanvas(document, { [key]: value }));
+      return;
+    }
     props.onChange({ ...document, stock: { ...document.stock, [key]: value } });
   };
   const updateDesign = (key: keyof InvitationDocument["design"], value: string) => {
@@ -108,10 +119,21 @@ export function LeftPanel(props: LeftPanelProps) {
         {tab === "assets" && (
           <div className="panel-section-stack">
             <section className="panel-section">
-              <div className="section-heading"><span>BLANGKO SISI {side.label.toUpperCase()}</span></div>
-              <p className="panel-hint">Blangko menjadi referensi terkunci dan tidak ikut dalam PDF cetak isi.</p>
-              <button type="button" className="secondary-button full-width" disabled={uploading} onClick={() => blangkoInput.current?.click()}><Upload size={15} />Unggah blangko</button>
+              <div className="section-heading"><span>BLANGKO SISI {side.label.toUpperCase()}</span><span className="protocol-badge">CV</span></div>
+              <p className="panel-hint">Smart canvas membaca rasio, metadata DPI, dan kandidat lipatan. Blangko tetap dikecualikan dari cetak isi.</p>
+              <button type="button" className="secondary-button full-width" disabled={uploading || analyzing} onClick={() => blangkoInput.current?.click()}><Upload size={15} />Unggah & analisis blangko</button>
               <input ref={blangkoInput} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) props.onUpload(file, "blangko"); event.target.value = ""; }} />
+              {analyzing && <div className="inline-status"><LoaderCircle className="spin" size={15} />Menganalisis ukuran dan lipatan…</div>}
+              {activeBlangko && (
+                <button type="button" className="secondary-button full-width analysis-button" disabled={analyzing} onClick={() => props.onAnalyzeBlangko(activeBlangko)}><ScanLine size={15} />{analysis ? "Analisis ulang smart canvas" : "Analisis smart canvas"}</button>
+              )}
+              {analysis && (
+                <div className="analysis-result" aria-live="polite">
+                  <div><strong>{analysis.widthMm} × {analysis.heightMm} mm</strong><span>{analysis.sizeSource === "metadata-dpi" ? `Metadata ${analysis.dpi} DPI` : analysis.sizeSource === "standard-aspect" ? "Estimasi ukuran standar" : "Estimasi dari rasio"}</span></div>
+                  {analysis.folds.map((fold, index) => <p key={`${fold.axis}-${index}`}>{fold.axis === "vertical" ? "Vertikal" : "Horizontal"} · {Math.round(fold.positionRatio * 100)}% · confidence {Math.round(fold.confidence * 100)}% <span>{fold.source === "layout-heuristic" ? "heuristic" : "CV"}</span></p>)}
+                  {analysis.warnings.map((warning) => <small key={warning}>{warning}</small>)}
+                </div>
+              )}
             </section>
             <section className="panel-section">
               <div className="section-heading"><span>ASET DESAIN</span></div>
@@ -129,10 +151,19 @@ export function LeftPanel(props: LeftPanelProps) {
                 <article className="asset-item" key={asset.id}>
                   <div className="asset-thumbnail">{assets[asset.id] ? <img src={assets[asset.id]} alt="" /> : <FileImage size={20} />}</div>
                   <div className="asset-copy"><strong>{asset.name}</strong><span>{asset.kind} · {asset.source === "builtin" ? "bawaan" : "tersimpan"}</span></div>
-                  {asset.kind === "blangko" ? (
-                    <button type="button" className="small-button" onClick={() => props.onUseBlangko(asset)}>Gunakan</button>
-                  ) : (
-                    <button type="button" className="small-button" onClick={() => props.onInsertAsset(asset)}>Sisipkan</button>
+                  <div className="asset-actions">
+                    {asset.kind === "blangko" ? (
+                      <button type="button" className="small-button" onClick={() => props.onUseBlangko(asset)}>Gunakan</button>
+                    ) : (
+                      <button type="button" className="small-button" onClick={() => props.onInsertAsset(asset)}>Sisipkan</button>
+                    )}
+                    <button type="button" className="icon-button danger" onClick={() => setRemoveCandidate(asset.id)} aria-label={`Hapus ${asset.name}`}><Trash2 size={14} /></button>
+                  </div>
+                  {removeCandidate === asset.id && (
+                    <div className="asset-remove-confirm" role="alert">
+                      <p>Hapus dari proyek? Objek yang memakai aset ini juga dihapus. File storage tidak dihapus permanen.</p>
+                      <div><button type="button" className="small-button" onClick={() => setRemoveCandidate(null)}>Batal</button><button type="button" className="small-button danger-fill" onClick={() => { props.onRemoveAsset(asset); setRemoveCandidate(null); }}>Hapus dari proyek</button></div>
+                    </div>
                   )}
                 </article>
               ))}

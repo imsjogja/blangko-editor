@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
-import { BookOpen, Check, ChevronLeft, ChevronRight, Cloud, CloudOff, Download, LoaderCircle, Redo2, Save, Undo2 } from "lucide-react";
+import { BookOpen, Check, Cloud, CloudOff, Download, LoaderCircle, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Redo2, Save, Undo2 } from "lucide-react";
 import { toast, Toaster } from "sonner";
 import type { BaseEvent } from "@ag-ui/core";
 import {
@@ -23,6 +23,9 @@ import { ExportDialog, type ExportOptions } from "@/components/editor/ExportDial
 import { exportMaster, exportPng, exportPrintPdf } from "@/lib/export";
 import { resolveAssetUrls, type AssetUrlMap } from "@/lib/builtin-assets";
 import { prepareImage } from "@/lib/uploads";
+import { analyzeBlangkoFile } from "@/lib/blangko-analysis";
+import { exportPhotoCraftHandoff } from "@/lib/photocraft-runtime";
+import { applyBlangkoAnalysis, removeAssetFromDocument } from "@contracts/smart-canvas";
 
 type SaveStatus = "saved" | "dirty" | "saving" | "error";
 type DomainEvent = BaseEvent & { name?: string; value?: unknown; message?: string };
@@ -46,6 +49,7 @@ export default function Home() {
   const [past, setPast] = useState<InvitationDocument[]>([]);
   const [future, setFuture] = useState<InvitationDocument[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentProgress, setAgentProgress] = useState<AgentProgress[]>([]);
   const [proposal, setProposal] = useState<DesignProposal | null>(null);
@@ -53,6 +57,9 @@ export default function Home() {
   const [exporting, setExporting] = useState(false);
   const [mobileLeft, setMobileLeft] = useState(false);
   const [mobileRight, setMobileRight] = useState(false);
+  const [desktopLeft, setDesktopLeft] = useState(true);
+  const [desktopRight, setDesktopRight] = useState(true);
+  const [isMobile, setIsMobile] = useState(() => window.matchMedia("(max-width: 940px)").matches);
   const createStarted = useRef(false);
 
   const createProject = trpc.project.create.useMutation();
@@ -64,6 +71,19 @@ export default function Home() {
   );
 
   useEffect(() => { documentRef.current = document; }, [document]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 940px)");
+    const update = () => {
+      setIsMobile(media.matches);
+      if (!media.matches) {
+        setMobileLeft(false);
+        setMobileRight(false);
+      }
+    };
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
 
   useEffect(() => {
     if (!projectId && !createStarted.current) {
@@ -210,22 +230,34 @@ export default function Home() {
   const handleUpload = async (file: File, kind: ProjectAsset["kind"]) => {
     if (!projectId) return;
     setUploading(true);
+    if (kind === "blangko") setAnalyzing(true);
     try {
-      const prepared = await prepareImage(file);
+      const [prepared, analysis] = await Promise.all([
+        prepareImage(file),
+        kind === "blangko" ? analyzeBlangkoFile(file) : Promise.resolve(undefined),
+      ]);
       const result = await uploadAsset.mutateAsync({ projectId, name: file.name, kind, ...prepared, contentType: file.type });
+      const asset: ProjectAsset = { ...result.asset, analysis };
       setAssetUrls((urls) => ({ ...urls, [result.asset.id]: result.url }));
       const current = documentRef.current;
-      changeDocument({
+      let next: InvitationDocument = {
         ...current,
-        stock: kind === "blangko" ? { ...current.stock, physicalSizeConfirmed: false } : current.stock,
-        assets: [...current.assets.filter((asset) => asset.id !== result.asset.id), result.asset],
-        sides: current.sides.map((side) => side.id === sideId && kind === "blangko" ? { ...side, blangkoAssetId: result.asset.id } : side),
-      });
-      toast.success(`${file.name} berhasil disimpan.`);
+        assets: [...current.assets.filter((item) => item.id !== asset.id), asset],
+        sides: current.sides.map((side) => side.id === sideId && kind === "blangko" ? { ...side, blangkoAssetId: asset.id } : side),
+      };
+      if (kind === "blangko" && analysis) {
+        next = applyBlangkoAnalysis(next, sideId, asset.id, analysis);
+        setZoom(1);
+      }
+      changeDocument(next);
+      toast.success(kind === "blangko" && analysis
+        ? `${file.name} dianalisis: ${analysis.widthMm} × ${analysis.heightMm} mm, ${analysis.folds.length} panduan lipat.`
+        : `${file.name} berhasil disimpan.`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Aset gagal diunggah.");
     } finally {
       setUploading(false);
+      setAnalyzing(false);
     }
   };
 
@@ -244,8 +276,47 @@ export default function Home() {
 
   const useBlangko = (asset: ProjectAsset) => {
     const current = documentRef.current;
-    changeDocument({ ...current, stock: { ...current.stock, physicalSizeConfirmed: false }, sides: current.sides.map((side) => side.id === sideId ? { ...side, blangkoAssetId: asset.id } : side) });
+    if (asset.analysis) {
+      changeDocument(applyBlangkoAnalysis(current, sideId, asset.id));
+      setZoom(1);
+    } else {
+      changeDocument({ ...current, stock: { ...current.stock, physicalSizeConfirmed: false }, sides: current.sides.map((side) => side.id === sideId ? { ...side, blangkoAssetId: asset.id } : side) });
+    }
     toast.success(`Blangko sisi ${sideId === "outside" ? "luar" : "dalam"} diganti.`);
+  };
+
+  const analyzeExistingBlangko = async (asset: ProjectAsset) => {
+    const url = resolveAssetUrls(documentRef.current.assets, assetUrls)[asset.id];
+    if (!url) {
+      toast.error("URL aset tidak tersedia untuk analisis.");
+      return;
+    }
+    setAnalyzing(true);
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("File blangko tidak dapat dibaca.");
+      const blob = await response.blob();
+      const file = new File([blob], asset.name, { type: blob.type || asset.contentType || "image/png" });
+      const analysis = await analyzeBlangkoFile(file);
+      const current = documentRef.current;
+      const withAnalysis = {
+        ...current,
+        assets: current.assets.map((item) => item.id === asset.id ? { ...item, analysis } : item),
+      };
+      changeDocument(applyBlangkoAnalysis(withAnalysis, sideId, asset.id, analysis));
+      setZoom(1);
+      toast.success("Smart canvas diperbarui dari analisis blangko.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Blangko gagal dianalisis.");
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const removeAsset = (asset: ProjectAsset) => {
+    changeDocument(removeAssetFromDocument(documentRef.current, asset.id));
+    setSelectedNodeId(null);
+    toast.success(`${asset.name} dihapus dari proyek. Undo tersedia.`);
   };
 
   const generateDesign = async (style: DesignStyle, prompt: string) => {
@@ -333,6 +404,24 @@ export default function Home() {
     }
   };
 
+  const handlePhotoCraft = async (includeBlangko: boolean) => {
+    setExporting(true);
+    try {
+      const runtime = await exportPhotoCraftHandoff({
+        document: documentRef.current,
+        sideId,
+        assets: resolveAssetUrls(documentRef.current.assets, assetUrls),
+        includeBlangko,
+      });
+      setExportOpen(false);
+      toast.success(`${runtime} berhasil membuat .pcraft dan semantic manifest.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Handoff PhotoCraft gagal.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
@@ -364,7 +453,16 @@ export default function Home() {
     <main className="editor-shell">
       <header className="topbar">
         <div className="brand-block"><div className="brand-mark"><BookOpen size={19} /></div><div><strong>BLANGKO</strong><span>EDITOR / 01</span></div></div>
-        <button type="button" className="mobile-panel-button left" onClick={() => setMobileLeft(true)} aria-label="Buka panel proyek"><ChevronRight size={18} /></button>
+        <button
+          type="button"
+          className="panel-toggle left"
+          onClick={() => isMobile ? setMobileLeft((value) => !value) : setDesktopLeft((value) => !value)}
+          aria-label={isMobile ? (mobileLeft ? "Tutup panel proyek" : "Buka panel proyek") : (desktopLeft ? "Sembunyikan panel proyek" : "Tampilkan panel proyek")}
+          aria-expanded={isMobile ? mobileLeft : desktopLeft}
+          aria-controls="left-panel"
+        >
+          {(isMobile ? mobileLeft : desktopLeft) ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+        </button>
         <div className="document-identity"><strong>{document.title}</strong><span>{side.label} · revisi {revisionRef.current}</span></div>
         <div className="topbar-actions">
           <span className={`save-status ${saveStatus}`}>
@@ -374,17 +472,35 @@ export default function Home() {
           <div className="history-actions"><button type="button" onClick={undo} disabled={!past.length} aria-label="Undo"><Undo2 size={17} /></button><button type="button" onClick={redo} disabled={!future.length} aria-label="Redo"><Redo2 size={17} /></button></div>
           <button type="button" className="secondary-button save-button" onClick={() => void saveNow()} disabled={saveStatus === "saving"}><Save size={15} />Simpan</button>
           <button type="button" className="primary-button export-button" onClick={() => setExportOpen(true)}><Download size={15} />Ekspor</button>
-          <button type="button" className="mobile-panel-button" onClick={() => setMobileRight(true)} aria-label="Buka inspector"><ChevronLeft size={18} /></button>
+          <button
+            type="button"
+            className="panel-toggle"
+            onClick={() => isMobile ? setMobileRight((value) => !value) : setDesktopRight((value) => !value)}
+            aria-label={isMobile ? (mobileRight ? "Tutup inspector" : "Buka inspector") : (desktopRight ? "Sembunyikan inspector" : "Tampilkan inspector")}
+            aria-expanded={isMobile ? mobileRight : desktopRight}
+            aria-controls="right-panel"
+          >
+            {(isMobile ? mobileRight : desktopRight) ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
+          </button>
         </div>
       </header>
 
-      <div className="editor-grid">
-        <div className={mobileLeft ? "mobile-panel-wrap open" : "mobile-panel-wrap"}><button type="button" className="mobile-close" onClick={() => setMobileLeft(false)}>Tutup panel</button><LeftPanel document={document} sideId={sideId} assets={resolvedAssets} uploading={uploading} agentRunning={agentRunning} agentProgress={agentProgress} proposal={proposal} onChange={changeDocument} onUpload={(file, kind) => void handleUpload(file, kind)} onInsertAsset={insertAsset} onUseBlangko={useBlangko} onGenerate={(style, prompt) => void generateDesign(style, prompt)} onApplyProposal={applyProposal} onDismissProposal={() => setProposal(null)} /></div>
+      {isMobile && (mobileLeft || mobileRight) && (
+        <button type="button" className="panel-backdrop" aria-label="Tutup semua panel" onClick={() => { setMobileLeft(false); setMobileRight(false); }} />
+      )}
+      <div className={`editor-grid ${desktopLeft ? "" : "hide-left"} ${desktopRight ? "" : "hide-right"}`}>
+        <div id="left-panel" className={`mobile-panel-wrap ${desktopLeft ? "" : "desktop-hidden"} ${mobileLeft ? "open" : ""}`}>
+          <button type="button" className="mobile-close" onClick={() => setMobileLeft(false)}>Tutup panel</button>
+          <LeftPanel document={document} sideId={sideId} assets={resolvedAssets} uploading={uploading} analyzing={analyzing} agentRunning={agentRunning} agentProgress={agentProgress} proposal={proposal} onChange={changeDocument} onUpload={(file, kind) => void handleUpload(file, kind)} onInsertAsset={insertAsset} onUseBlangko={useBlangko} onAnalyzeBlangko={(asset) => void analyzeExistingBlangko(asset)} onRemoveAsset={removeAsset} onGenerate={(style, prompt) => void generateDesign(style, prompt)} onApplyProposal={applyProposal} onDismissProposal={() => setProposal(null)} />
+        </div>
         <CanvasEditor document={document} sideId={sideId} assets={resolvedAssets} selectedNodeId={selectedNodeId} showBlangko={showBlangko} showGuides={showGuides} zoom={zoom} onSideChange={setSideId} onSelectNode={setSelectedNodeId} onUpdateNode={updateNode} onToggleBlangko={() => setShowBlangko((value) => !value)} onToggleGuides={() => setShowGuides((value) => !value)} onZoomChange={setZoom} />
-        <div className={mobileRight ? "mobile-panel-wrap right open" : "mobile-panel-wrap"}><button type="button" className="mobile-close" onClick={() => setMobileRight(false)}>Tutup inspector</button><Inspector document={document} sideId={sideId} selectedNode={selectedNode} issues={issues} onUpdateNode={updateNode} onSelectNode={setSelectedNodeId} onDeleteNode={deleteNode} onDuplicateNode={duplicateNode} onReorderNode={reorderNode} onAddNode={addNode} onExport={() => setExportOpen(true)} /></div>
+        <div id="right-panel" className={`mobile-panel-wrap right ${desktopRight ? "" : "desktop-hidden"} ${mobileRight ? "open" : ""}`}>
+          <button type="button" className="mobile-close" onClick={() => setMobileRight(false)}>Tutup inspector</button>
+          <Inspector document={document} sideId={sideId} selectedNode={selectedNode} issues={issues} onUpdateNode={updateNode} onSelectNode={setSelectedNodeId} onDeleteNode={deleteNode} onDuplicateNode={duplicateNode} onReorderNode={reorderNode} onAddNode={addNode} onExport={() => setExportOpen(true)} />
+        </div>
       </div>
 
-      {exportOpen && <ExportDialog document={document} sideId={sideId} issues={issues} exporting={exporting} onClose={() => setExportOpen(false)} onExport={(options) => void handleExport(options)} onMaster={() => exportMaster(document)} />}
+      {exportOpen && <ExportDialog document={document} sideId={sideId} issues={issues} exporting={exporting} onClose={() => setExportOpen(false)} onExport={(options) => void handleExport(options)} onPhotoCraft={(includeBlangko) => void handlePhotoCraft(includeBlangko)} onMaster={() => exportMaster(document)} />}
       <Toaster position="bottom-right" theme="dark" richColors />
     </main>
   );

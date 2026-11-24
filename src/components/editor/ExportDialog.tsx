@@ -58,10 +58,10 @@ export function ExportDialog({ document, sideId, issues, exporting, onClose, onE
             </div>
             <div className="export-spec"><span>{document.stock.width} × {document.stock.height} mm</span><span>{document.stock.targetPpi} ppi</span><span>Skala 100%</span></div>
             <section className="photocraft-handoff" aria-label="PhotoCraft runtime">
-              <div className="section-heading"><span>PHOTOCRAFT RUNTIME</span><span className={runtime?.available ? "runtime-state available" : "runtime-state"}>{runtime?.available ? "CLI AKTIF" : "CLI"}</span></div>
+              <div className="section-heading"><span>PHOTOCRAFT RUNTIME</span><span className={runtime?.available ? "runtime-state available" : "runtime-state"}>{runtime?.available ? "ENGINE AKTIF" : "ENGINE"}</span></div>
               <p>{runtimeError || runtime?.message || "Memeriksa runtime PhotoCraft…"}</p>
               {runtime?.version && <code>{runtime.version}</code>}
-              <small>Handoff raster sisi aktif ke .pcraft + semantic manifest JSON. Layer editable penuh belum diterapkan.</small>
+              <small>Dokumen native sisi aktif dengan Type, Shape, dan Smart Object yang tetap editable + semantic manifest JSON.</small>
               <button type="button" className="secondary-button full-width" disabled={exporting || !runtime?.available} onClick={() => onPhotoCraft(includeBlangko)}>{exporting ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}Ekspor .pcraft sisi aktif</button>
             </section>
           </div>

@@ -1,14 +1,23 @@
 import type { InvitationDocument, SideId } from "@contracts/invitation";
+import type { PhotoCraftRuntimeAssets, PrintProjection } from "@contracts/photocraft";
+import { getSide } from "@contracts/invitation";
 import type { AssetUrlMap } from "./builtin-assets";
-import { renderSideToCanvas } from "./export";
 
 export interface PhotoCraftRuntimeStatus {
   available: boolean;
-  mode: "cli";
-  handoff: "raster-pcraft";
-  editableLayers: false;
+  mode: "headless-engine";
+  handoff: "native-pcraft";
+  editableLayers: true;
   version?: string;
   message: string;
+}
+
+export interface PhotoCraftRuntimeSnapshot {
+  mime: string;
+  imageBase64: string;
+  inspect: unknown;
+  runtime: string;
+  editableLayers: true;
 }
 
 export async function getPhotoCraftStatus(): Promise<PhotoCraftRuntimeStatus> {
@@ -33,27 +42,88 @@ function base64Bytes(value: string) {
   return bytes;
 }
 
+function bytesBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function collectRuntimeAssets(
+  document: InvitationDocument,
+  sideId: SideId,
+  projection: PrintProjection,
+  assets: AssetUrlMap,
+): Promise<PhotoCraftRuntimeAssets> {
+  const side = getSide(document, sideId);
+  const ids = new Set(side.nodes.filter((node) => node.visible && node.kind === "image").map((node) => node.assetId));
+  if (projection === "composite" && side.blangkoAssetId) ids.add(side.blangkoAssetId);
+  const result: PhotoCraftRuntimeAssets = {};
+  await Promise.all([...ids].map(async (assetId) => {
+    if (!assetId) return;
+    const url = assets[assetId];
+    if (!url) throw new Error(`URL aset ${assetId} belum tersedia.`);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Aset ${assetId} gagal dibaca untuk runtime.`);
+    const blob = await response.blob();
+    if (blob.size > 32 * 1024 * 1024) throw new Error(`Aset ${assetId} melebihi 32 MB.`);
+    const source = document.assets.find((asset) => asset.id === assetId);
+    result[assetId] = {
+      name: source?.name || `${assetId}.png`,
+      contentType: blob.type || source?.contentType,
+      dataBase64: bytesBase64(new Uint8Array(await blob.arrayBuffer())),
+    };
+  }));
+  return result;
+}
+
+export async function syncPhotoCraftRuntime(options: {
+  document: InvitationDocument;
+  sideId: SideId;
+  assets: AssetUrlMap;
+  includeBlangko: boolean;
+  maxSide?: number;
+  signal?: AbortSignal;
+}): Promise<PhotoCraftRuntimeSnapshot> {
+  const projection = options.includeBlangko ? "composite" : "content-only";
+  const runtimeAssets = await collectRuntimeAssets(options.document, options.sideId, projection, options.assets);
+  const response = await fetch("/api/photocraft/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: options.signal,
+    body: JSON.stringify({
+      document: options.document,
+      sideId: options.sideId,
+      projection,
+      assets: runtimeAssets,
+      maxSide: options.maxSide,
+    }),
+  });
+  const result = await response.json() as PhotoCraftRuntimeSnapshot & { error?: string };
+  if (!response.ok || !result.imageBase64) {
+    throw new Error(result.error || "Runtime PhotoCraft gagal merender dokumen.");
+  }
+  return result;
+}
+
 export async function exportPhotoCraftHandoff(options: {
   document: InvitationDocument;
   sideId: SideId;
   assets: AssetUrlMap;
   includeBlangko: boolean;
 }) {
-  const canvas = await renderSideToCanvas({
-    ...options,
-    dpi: options.document.stock.targetPpi,
-    includeGuides: false,
-  });
-  const pngBase64 = canvas.toDataURL("image/png").split(",")[1];
-  if (!pngBase64) throw new Error("Raster canvas gagal dibuat.");
+  const projection = options.includeBlangko ? "composite" : "content-only";
+  const runtimeAssets = await collectRuntimeAssets(options.document, options.sideId, projection, options.assets);
   const response = await fetch("/api/photocraft/handoff", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       document: options.document,
       sideId: options.sideId,
-      projection: options.includeBlangko ? "composite" : "content-only",
-      pngBase64,
+      projection,
+      assets: runtimeAssets,
     }),
   });
   const result = await response.json() as {
@@ -64,7 +134,7 @@ export async function exportPhotoCraftHandoff(options: {
     error?: string;
   };
   if (!response.ok || !result.fileBase64 || !result.fileName) {
-    throw new Error(result.error || "PhotoCraft gagal membuat dokumen.");
+    throw new Error(result.error || "PhotoCraft gagal membuat dokumen native.");
   }
   const bytes = base64Bytes(result.fileBase64);
   const buffer = new ArrayBuffer(bytes.byteLength);

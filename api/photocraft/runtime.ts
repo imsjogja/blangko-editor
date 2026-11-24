@@ -1,18 +1,28 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { compilePhotoCraftBatch, type PrintProjection } from "@contracts/photocraft";
-import type { InvitationDocument, SideId } from "@contracts/invitation";
+import {
+  compilePhotoCraftBatch,
+  compilePhotoCraftEngineSteps,
+  type PhotoCraftRuntimeAssets,
+  type PrintProjection,
+} from "@contracts/photocraft";
+import { getSide, type InvitationDocument, type SideId } from "@contracts/invitation";
+import { getPhotoCraftSession, resolvePhotoCraftBinary } from "./session";
 
-const CLI_TIMEOUT_MS = 60_000;
+const CLI_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
+const MAX_ASSET_BYTES = 32 * 1024 * 1024;
+const MAX_CANVAS_PIXELS = 40_000_000;
+
+let runtimeQueue: Promise<unknown> = Promise.resolve();
 
 export interface PhotoCraftStatus {
   available: boolean;
-  mode: "cli";
-  handoff: "raster-pcraft";
-  editableLayers: false;
+  mode: "headless-engine";
+  handoff: "native-pcraft";
+  editableLayers: true;
   version?: string;
   message: string;
 }
@@ -22,21 +32,11 @@ interface ProcessResult {
   stderr: string;
 }
 
-function execute(
-  binaryPath: string,
-  args: string[],
-  cwd?: string,
-  timeoutMs = CLI_TIMEOUT_MS,
-): Promise<ProcessResult> {
+function execute(binaryPath: string, args: string[], timeoutMs = CLI_TIMEOUT_MS): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(binaryPath, args, {
-      cwd,
       shell: false,
-      env: {
-        ...process.env,
-        PHOTOCRAFT_NO_DESKTOP_INTEGRATION: "1",
-        PHOTOCRAFT_CONFIG_DIR: cwd ? path.join(cwd, "config") : process.env.PHOTOCRAFT_CONFIG_DIR,
-      },
+      env: { ...process.env, PHOTOCRAFT_NO_DESKTOP_INTEGRATION: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -47,10 +47,7 @@ function execute(
     }, timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(-MAX_OUTPUT_BYTES); });
     child.stderr.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-MAX_OUTPUT_BYTES); });
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
+    child.on("error", (error) => { clearTimeout(timeout); reject(error); });
     child.on("close", (code) => {
       clearTimeout(timeout);
       if (code === 0) resolve({ stdout, stderr });
@@ -59,87 +56,161 @@ function execute(
   });
 }
 
-function configuredBinary(explicitPath?: string) {
-  return explicitPath?.trim() || process.env.PHOTOCRAFT_CLI_BIN?.trim() || "photocraft-cli";
-}
-
 function cliArguments(binaryPath: string, args: string[]) {
   return binaryPath.toLowerCase().endsWith(".appimage") ? ["--cli", ...args] : args;
 }
 
 export async function probePhotoCraft(binaryPath?: string): Promise<PhotoCraftStatus> {
-  const binary = configuredBinary(binaryPath);
   try {
+    const binary = await resolvePhotoCraftBinary(binaryPath);
     const { stdout, stderr } = await execute(binary, cliArguments(binary, ["--version"]));
     const version = (stdout || stderr).trim().split("\n")[0]?.slice(0, 120) || "versi tidak dilaporkan";
     return {
       available: true,
-      mode: "cli",
-      handoff: "raster-pcraft",
-      editableLayers: false,
+      mode: "headless-engine",
+      handoff: "native-pcraft",
+      editableLayers: true,
       version,
-      message: "CLI siap membuat dokumen .pcraft dari raster canvas.",
+      message: "Engine PhotoCraft aktif: render, transformasi, dan layer editable tersinkronisasi.",
     };
-  } catch {
+  } catch (error) {
     return {
       available: false,
-      mode: "cli",
-      handoff: "raster-pcraft",
-      editableLayers: false,
-      message: "PhotoCraft CLI belum tersedia. Pasang runtime dan atur PHOTOCRAFT_CLI_BIN pada server.",
+      mode: "headless-engine",
+      handoff: "native-pcraft",
+      editableLayers: true,
+      message: error instanceof Error
+        ? `Runtime PhotoCraft belum tersedia: ${error.message}`
+        : "Runtime PhotoCraft belum tersedia.",
     };
   }
 }
 
-export async function runPhotoCraftHandoff(options: {
+function extensionForAsset(asset: PhotoCraftRuntimeAssets[string]): string {
+  const type = asset.contentType?.toLowerCase();
+  if (type === "image/jpeg" || /\.jpe?g$/i.test(asset.name)) return ".jpg";
+  if (type === "image/webp" || /\.webp$/i.test(asset.name)) return ".webp";
+  if (type === "image/svg+xml" || /\.svg$/i.test(asset.name)) return ".svg";
+  if (type === "image/gif" || /\.gif$/i.test(asset.name)) return ".gif";
+  if (type === "image/tiff" || /\.tiff?$/i.test(asset.name)) return ".tif";
+  return ".png";
+}
+
+function validateAssetBytes(asset: PhotoCraftRuntimeAssets[string]): Buffer {
+  const bytes = Buffer.from(asset.dataBase64, "base64");
+  if (bytes.byteLength < 8 || bytes.byteLength > MAX_ASSET_BYTES) {
+    throw new Error(`Aset ${asset.name} kosong atau melebihi 32 MB.`);
+  }
+  return bytes;
+}
+
+export interface PhotoCraftRuntimeResult {
+  mime: string;
+  imageBase64: string;
+  inspect: unknown;
+  runtime: string;
+  editableLayers: true;
+  fileBase64?: string;
+  fileName?: string;
+  manifest?: unknown;
+}
+
+export interface PhotoCraftSyncOptions {
   document: InvitationDocument;
   sideId: SideId;
   projection: PrintProjection;
-  pngBase64: string;
+  assets: PhotoCraftRuntimeAssets;
+  includeDocument?: boolean;
+  maxSide?: number;
   binaryPath?: string;
-  timeoutMs?: number;
-}) {
-  const binary = configuredBinary(options.binaryPath);
-  const bytes = Buffer.from(options.pngBase64, "base64");
-  const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-  if (
-    bytes.byteLength < 8
-    || bytes.byteLength > 32 * 1024 * 1024
-    || !bytes.subarray(0, 8).equals(pngSignature)
-  ) {
-    throw new Error("Raster harus berupa PNG valid dan tidak melebihi 32 MB.");
+}
+
+export function syncPhotoCraftRuntime(options: PhotoCraftSyncOptions): Promise<PhotoCraftRuntimeResult> {
+  const run = runtimeQueue.then(() => syncPhotoCraftRuntimeExclusive(options));
+  runtimeQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function syncPhotoCraftRuntimeExclusive(options: PhotoCraftSyncOptions): Promise<PhotoCraftRuntimeResult> {
+  const status = await probePhotoCraft(options.binaryPath);
+  if (!status.available) throw new Error(status.message);
+  const binary = await resolvePhotoCraftBinary(options.binaryPath);
+  const session = getPhotoCraftSession(binary);
+  const root = await session.getRoot();
+  const width = Math.round(options.document.stock.width * options.document.stock.targetPpi / 25.4);
+  const height = Math.round(options.document.stock.height * options.document.stock.targetPpi / 25.4);
+  if (width < 1 || height < 1 || width * height > MAX_CANVAS_PIXELS) {
+    throw new Error(`Canvas ${width} × ${height} px melebihi batas runtime ${MAX_CANVAS_PIXELS.toLocaleString("id-ID")} px.`);
   }
-  const manifest = compilePhotoCraftBatch(options.document, options.sideId, options.projection);
-  const directory = await mkdtemp(path.join(tmpdir(), "blangko-photocraft-"));
-  const inputPath = path.join(directory, "canvas.png");
-  const outputPath = path.join(directory, "document.pcraft");
+
+  const assetPaths: Record<string, string> = {};
+  for (const [assetId, asset] of Object.entries(options.assets)) {
+    const digest = createHash("sha256").update(assetId).digest("hex").slice(0, 24);
+    const relativePath = path.join("assets", `${digest}${extensionForAsset(asset)}`);
+    await writeFile(path.join(root, relativePath), validateAssetBytes(asset), { flag: "w" });
+    assetPaths[assetId] = relativePath;
+  }
+
+  const side = getSide(options.document, options.sideId);
+  const requiredAssetIds = new Set(
+    side.nodes.filter((node) => node.visible && node.kind === "image").map((node) => node.assetId),
+  );
+  if (options.projection === "composite" && side.blangkoAssetId) requiredAssetIds.add(side.blangkoAssetId);
+  for (const assetId of requiredAssetIds) {
+    if (!assetId || !assetPaths[assetId]) throw new Error(`Aset ${assetId || "tanpa ID"} belum dikirim ke runtime.`);
+  }
+
+  const steps = compilePhotoCraftEngineSteps(options.document, options.sideId, options.projection, assetPaths);
+  const created = await session.request<{ document: number }>("doc.new", {
+    width, height,
+    resolution: options.document.stock.targetPpi,
+    background: "transparent",
+    name: `${options.document.title} — ${side.label}`,
+  });
   try {
-    await Promise.all([
-      writeFile(inputPath, bytes),
-      writeFile(path.join(directory, "semantic-manifest.json"), JSON.stringify({
-        schema: "blangko.photocraft.semantic.v1",
+    if (steps.length) await session.request("batch", { steps, stopOnError: true });
+    const [inspect, render] = await Promise.all([
+      session.request("doc.inspect", { index: created.document }),
+      session.request<{ mime: string; base64: string }>("doc.render", {
+        index: created.document,
+        maxSide: Math.max(64, Math.min(2400, Math.round(options.maxSide ?? 1600))),
+      }),
+    ]);
+    let fileBase64: string | undefined;
+    let fileName: string | undefined;
+    let manifest: unknown;
+    if (options.includeDocument) {
+      const outputName = `blangko-${options.sideId}-${options.projection}-${randomUUID()}.pcraft`;
+      const relativeOutput = outputName;
+      await session.request("doc.save", {
+        index: created.document,
+        path: relativeOutput,
+        format: "pcraft",
+        pcraftFullComposite: false,
+      });
+      fileBase64 = (await readFile(path.join(root, relativeOutput))).toString("base64");
+      await rm(path.join(root, relativeOutput), { force: true });
+      fileName = `blangko-${options.sideId}-${options.projection}.pcraft`;
+      manifest = {
+        schema: "blangko.photocraft.semantic.v2",
+        runtime: status.version,
+        editableLayers: true,
         projection: options.projection,
         sideId: options.sideId,
-        commands: manifest,
-      }, null, 2)),
-    ]);
-    const status = await probePhotoCraft(binary);
-    if (!status.available) throw new Error(status.message);
-    await execute(
-      binary,
-      cliArguments(binary, ["run", inputPath, "--out", outputPath]),
-      directory,
-      options.timeoutMs,
-    );
-    const output = await readFile(outputPath);
+        commands: compilePhotoCraftBatch(options.document, options.sideId, options.projection),
+      };
+    }
     return {
-      fileBase64: output.toString("base64"),
-      fileName: `blangko-${options.sideId}-${options.projection}.pcraft`,
-      manifest: { schema: "blangko.photocraft.semantic.v1", commands: manifest },
-      runtime: status.version || "PhotoCraft CLI",
-      editableLayers: false as const,
+      mime: render.mime,
+      imageBase64: render.base64,
+      inspect,
+      runtime: status.version || "PhotoCraft",
+      editableLayers: true,
+      fileBase64,
+      fileName,
+      manifest,
     };
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await session.request("doc.close", { index: created.document }).catch(() => undefined);
   }
 }

@@ -1,65 +1,94 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createInitialDocument } from "@contracts/invitation";
-import { probePhotoCraft, runPhotoCraftHandoff } from "./runtime";
+import {
+  applyDesignProposal,
+  createInitialDocument,
+  type InvitationDocument,
+} from "@contracts/invitation";
+import { createDeterministicProposal } from "../design";
+import { disposePhotoCraftSessions } from "./session";
+import { probePhotoCraft, syncPhotoCraftRuntime } from "./runtime";
 
 const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 const fixtureDirectories: string[] = [];
 
-async function createFakeCli(behavior: "success" | "failure" | "timeout", appImage = false) {
+async function createFakeCli(behavior: "success" | "failure" = "success", appImage = false) {
   const directory = await mkdtemp(path.join(tmpdir(), "blangko-cli-test-"));
   fixtureDirectories.push(directory);
   const binaryPath = path.join(directory, appImage ? "photocraft.AppImage" : "photocraft.cjs");
-  const argsPath = path.join(directory, "arguments.json");
+  const logPath = path.join(directory, "requests.json");
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
+const readline = require("node:readline");
 const args = process.argv.slice(2);
 if (args[0] === "--cli") args.shift();
-fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args));
 if (args[0] === "--version") {
+  fs.writeFileSync(${JSON.stringify(logPath)}, JSON.stringify(args));
   console.log("PhotoCraft CLI test 1.0");
   process.exit(0);
 }
-if (${JSON.stringify(behavior)} === "failure") {
-  console.error("synthetic CLI failure");
-  process.exit(9);
+const requests = [];
+function record(request) {
+  requests.push(request);
+  fs.writeFileSync(${JSON.stringify(logPath)}, JSON.stringify(requests));
 }
-if (${JSON.stringify(behavior)} === "timeout") {
-  setTimeout(() => process.exit(0), 5000);
-} else {
-  const outputIndex = args.indexOf("--out");
-  fs.copyFileSync(args[1], args[outputIndex + 1]);
+function reply(id, result) {
+  process.stdout.write(JSON.stringify({ id, ok: true, result }) + "\\n");
 }
+const lines = readline.createInterface({ input: process.stdin });
+lines.on("line", (line) => {
+  const request = JSON.parse(line);
+  record(request);
+  const { id, method, params } = request;
+  if (method === "methods") return reply(id, { methods: ["doc.new", "doc.render"] });
+  if (method === "doc.new") return reply(id, { document: 0 });
+  if (method === "batch") {
+    if (${JSON.stringify(behavior)} === "failure") {
+      process.stdout.write(JSON.stringify({ id, ok: false, error: { message: "synthetic engine failure" } }) + "\\n");
+      return;
+    }
+    return reply(id, { results: [] });
+  }
+  if (method === "doc.inspect") return reply(id, { layers: [{ name: "blangko-node:outside-names", kind: "Type" }] });
+  if (method === "doc.render") return reply(id, { mime: "image/png", base64: ${JSON.stringify(PNG_1X1)} });
+  if (method === "doc.save") {
+    fs.writeFileSync(params.path, "native-pcraft");
+    return reply(id, { path: params.path });
+  }
+  if (method === "doc.close") return reply(id, { closed: params.index });
+  reply(id, {});
+});
 `;
   await writeFile(binaryPath, script, "utf8");
   await chmod(binaryPath, 0o755);
-  return { binaryPath, argsPath };
+  return { binaryPath, logPath };
 }
 
-function handoffOptions(binaryPath: string, timeoutMs?: number) {
+function runtimeOptions(binaryPath: string, document: InvitationDocument = createInitialDocument()) {
   return {
-    document: createInitialDocument(),
+    document,
     sideId: "outside" as const,
     projection: "content-only" as const,
-    pngBase64: PNG_1X1,
+    assets: {},
+    includeDocument: true,
     binaryPath,
-    timeoutMs,
   };
 }
 
 afterEach(async () => {
+  await disposePhotoCraftSessions();
   await Promise.all(fixtureDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-describe("PhotoCraft CLI runtime", () => {
+describe("PhotoCraft runtime protocol", () => {
   it("melaporkan binary yang tidak tersedia tanpa melempar error", async () => {
     const status = await probePhotoCraft(path.join(tmpdir(), "photocraft-binary-tidak-ada"));
     expect(status.available).toBe(false);
-    expect(status.editableLayers).toBe(false);
-    expect(status.message).toContain("PHOTOCRAFT_CLI_BIN");
+    expect(status.mode).toBe("headless-engine");
+    expect(status.handoff).toBe("native-pcraft");
+    expect(status.message).toContain("Runtime PhotoCraft belum tersedia");
   });
 
   it("menambahkan prefix --cli untuk AppImage dan membaca versi", async () => {
@@ -67,34 +96,121 @@ describe("PhotoCraft CLI runtime", () => {
     const status = await probePhotoCraft(fake.binaryPath);
     expect(status.available).toBe(true);
     expect(status.version).toBe("PhotoCraft CLI test 1.0");
-    expect(JSON.parse(await readFile(fake.argsPath, "utf8"))).toEqual(["--version"]);
+    expect(JSON.parse(await readFile(fake.logPath, "utf8"))).toEqual(["--version"]);
   });
 
-  it("menjalankan handoff tanpa shell, menghasilkan manifest, dan membersihkan direktori sementara", async () => {
-    const fake = await createFakeCli("success");
-    const result = await runPhotoCraftHandoff(handoffOptions(fake.binaryPath));
-    const args = JSON.parse(await readFile(fake.argsPath, "utf8")) as string[];
-    expect(args[0]).toBe("run");
-    expect(args[2]).toBe("--out");
-    expect(args[1]).toContain("canvas.png");
-    expect(result.fileBase64).toBe(PNG_1X1);
+  it("menjalankan persistent RPC dan menghasilkan dokumen serta manifest native v2", async () => {
+    const fake = await createFakeCli();
+    const result = await syncPhotoCraftRuntime(runtimeOptions(fake.binaryPath));
+    const requests = JSON.parse(await readFile(fake.logPath, "utf8")) as Array<{
+      method: string;
+      params: Record<string, unknown>;
+    }>;
+
+    expect(requests.map((request) => request.method)).toEqual([
+      "methods", "doc.new", "batch", "doc.inspect", "doc.render", "doc.save", "doc.close",
+    ]);
+    expect(requests[1].params).toMatchObject({ width: 3508, height: 2480, resolution: 300, background: "transparent" });
+    expect(JSON.stringify(requests[2])).toContain("type.create");
+    expect(JSON.stringify(requests[2])).toContain("shape.create");
+    expect(JSON.stringify(requests[2])).not.toContain("__BLANGKO__");
+    expect(Buffer.from(result.fileBase64 || "", "base64").toString()).toBe("native-pcraft");
+    expect(result.imageBase64).toBe(PNG_1X1);
     expect(result.runtime).toBe("PhotoCraft CLI test 1.0");
-    expect(result.manifest).toMatchObject({ schema: "blangko.photocraft.semantic.v1" });
-    expect(result.editableLayers).toBe(false);
-    expect(existsSync(path.dirname(args[1]))).toBe(false);
+    expect(result.manifest).toMatchObject({
+      schema: "blangko.photocraft.semantic.v2",
+      editableLayers: true,
+      projection: "content-only",
+      sideId: "outside",
+    });
+    expect(result.editableLayers).toBe(true);
   });
 
-  it("membersihkan direktori sementara ketika CLI gagal", async () => {
+  it("menjalankan seluruh transaksi dokumen secara eksklusif saat request bersamaan", async () => {
+    const fake = await createFakeCli();
+    await Promise.all([
+      syncPhotoCraftRuntime(runtimeOptions(fake.binaryPath)),
+      syncPhotoCraftRuntime(runtimeOptions(fake.binaryPath)),
+    ]);
+    const requests = JSON.parse(await readFile(fake.logPath, "utf8")) as Array<{ method: string }>;
+    const methods = requests.map((request) => request.method);
+
+    expect(methods).toEqual([
+      "methods",
+      "doc.new", "batch", "doc.inspect", "doc.render", "doc.save", "doc.close",
+      "doc.new", "batch", "doc.inspect", "doc.render", "doc.save", "doc.close",
+    ]);
+  });
+
+  it("menutup dokumen ketika batch engine gagal", async () => {
     const fake = await createFakeCli("failure");
-    await expect(runPhotoCraftHandoff(handoffOptions(fake.binaryPath))).rejects.toThrow("synthetic CLI failure");
-    const args = JSON.parse(await readFile(fake.argsPath, "utf8")) as string[];
-    expect(existsSync(path.dirname(args[1]))).toBe(false);
+    await expect(syncPhotoCraftRuntime(runtimeOptions(fake.binaryPath))).rejects.toThrow("synthetic engine failure");
+    const requests = JSON.parse(await readFile(fake.logPath, "utf8")) as Array<{ method: string }>;
+    expect(requests.at(-1)?.method).toBe("doc.close");
   });
+});
 
-  it("menghentikan proses yang melewati timeout dan tetap membersihkan file", async () => {
-    const fake = await createFakeCli("timeout");
-    await expect(runPhotoCraftHandoff(handoffOptions(fake.binaryPath, 40))).rejects.toThrow("batas waktu");
-    const args = JSON.parse(await readFile(fake.argsPath, "utf8")) as string[];
-    expect(existsSync(path.dirname(args[1]))).toBe(false);
-  });
+describe("PhotoCraft real engine regression", () => {
+  it("merender komposisi kaya dan menyimpan Type, Shape, serta Smart Object native", async () => {
+    let document = createInitialDocument();
+    document.stock = { ...document.stock, width: 140, height: 100, safeMargin: 6, physicalSizeConfirmed: true };
+    document.assets.push({
+      id: "photo-cover",
+      name: "cover.png",
+      kind: "photo",
+      source: "storage",
+      storageKey: "projects/test/cover.png",
+      contentType: "image/png",
+      width: 64,
+      height: 64,
+    });
+    document = applyDesignProposal(document, createDeterministicProposal(document, "outside", "rustic"));
+    const outside = document.sides[0];
+    const title = outside.nodes.find((node) => node.id === "agent-title");
+    if (title) {
+      title.rotation = -4;
+      title.opacity = 0.85;
+    }
+    const firstShape = outside.nodes.find((node) => node.kind === "shape");
+    if (firstShape) firstShape.locked = true;
+    outside.nodes.push({
+      id: "rounded-photo-regression",
+      kind: "image",
+      role: "CONTENT",
+      box: { x: 8, y: 8, width: 18, height: 22 },
+      rotation: 5,
+      visible: true,
+      locked: false,
+      opacity: 0.8,
+      zIndex: 8,
+      assetId: "photo-cover",
+      clipShape: "rounded-rectangle",
+      cornerRadius: 3,
+    });
+
+    const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1000" viewBox="0 0 1400 1000"><rect width="1400" height="1000" fill="#f4efe5"/><path d="M0 800 Q350 600 700 800 T1400 800 V1000 H0Z" fill="#6e7254"/></svg>`).toString("base64");
+    const result = await syncPhotoCraftRuntime({
+      document,
+      sideId: "outside",
+      projection: "composite",
+      assets: {
+        "builtin-outside": { name: "blangko.svg", contentType: "image/svg+xml", dataBase64: svg },
+        "photo-cover": { name: "cover.png", contentType: "image/png", dataBase64: PNG_1X1 },
+      },
+      includeDocument: true,
+      maxSide: 1000,
+    });
+    const inspect = JSON.stringify(result.inspect);
+
+    expect(result.mime).toBe("image/png");
+    expect(result.imageBase64.length).toBeGreaterThan(100);
+    expect(Buffer.from(result.fileBase64 || "", "base64").byteLength).toBeGreaterThan(1000);
+    expect(inspect).toContain("__BLANGKO__");
+    expect(inspect).toContain("blangko-node:agent-title");
+    expect(inspect).toContain("blangko-node:rounded-photo-regression");
+    expect(inspect).toMatch(/"kind"\s*:\s*"Type"/);
+    expect(inspect).toMatch(/"kind"\s*:\s*"Shape"/);
+    expect(inspect).toMatch(/Smart\s*Object/i);
+    expect(result.manifest).toMatchObject({ schema: "blangko.photocraft.semantic.v2", projection: "composite" });
+  }, 120_000);
 });

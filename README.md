@@ -20,7 +20,7 @@ Editor layout undangan berbasis blangko kosong dengan pemisahan tegas antara **r
    - **Cetak isi**: hanya node desain, tanpa blangko dan guides;
    - **Preview komposit**: blangko dan desain isi digabung untuk tinjauan visual;
    - **Master JSON**: dokumen domain tanpa presigned URL;
-   - **PhotoCraft handoff**: `.pcraft` raster sisi aktif dan semantic manifest JSON melalui CLI server jika runtime tersedia.
+   - **PhotoCraft native**: `.pcraft` sisi aktif dengan Type, Shape, dan Smart Object yang tetap editable, disertai semantic manifest v2.
 
 ## Stack
 
@@ -30,27 +30,32 @@ Editor layout undangan berbasis blangko kosong dengan pemisahan tegas antara **r
 - AG-UI Core event contracts melalui SSE
 - AI SDK dengan model yang dipilih melalui `listModels()`
 - Platform object storage, dengan aset gambar disalurkan kembali melalui endpoint proyek same-origin agar canvas dapat diekspor tanpa masalah CORS
-- `pdf-lib` + Canvas 2D untuk output raster pada halaman berukuran fisik
+- `pdf-lib` + Canvas 2D untuk output PNG/PDF umum pada halaman berukuran fisik
+- PhotoCraft CLI resmi 0.23.1 sebagai headless editing/render engine melalui persistent JSON-lines RPC
 - PWA dengan auto-update dan navigasi HTML `NetworkOnly`
 
 ## Arsitektur
 
 ```text
 React Workspace
-├── Domain Canvas (runtime editor aktif)
+├── PhotoCraft engine render + semantic node proxies → drag / resize / rotate
+├── Local Domain Canvas → fallback yang diberi label saat engine nonaktif/gagal
 ├── AG-UI SSE → Agent Orchestrator → proposal → human approval
 ├── tRPC → Project / Asset API → MySQL
 ├── Same-origin Asset Route → Object Storage
 ├── Browser CV → ukuran fisik/estimasi + kandidat lipatan → Smart Canvas
-└── PhotoCraft CLI Adapter → raster .pcraft + semantic manifest
+└── Canonical document → native command compiler → persistent PhotoCraft RPC
+    ├── PNG preview otoritatif untuk canvas
+    └── Native .pcraft + semantic manifest v2
 ```
 
 Sumber kebenaran adalah dokumen undangan ber-Zod di `contracts/invitation.ts`, bukan struktur internal editor. Seluruh posisi dan dimensi node disimpan dalam milimeter.
 
 ### Proyeksi cetak
 
-- `composite`: grup `__BLANGKO__`, `__CONTENT__`, dan `__GUIDES__` untuk referensi.
-- `content-only`: hanya grup `__CONTENT__` yang printable.
+- `composite`: frame `__BLANGKO__` terkunci dirender di belakang node konten; guides tetap berupa overlay DOM yang tidak dicetak.
+- `content-only`: hanya node konten native yang dibuat, tanpa layer blangko maupun guides.
+- Semantic manifest mempertahankan pengelompokan `__BLANGKO__`, `__CONTENT__`, dan `__GUIDES__` untuk interoperabilitas domain.
 
 ### AG-UI
 
@@ -98,7 +103,7 @@ npm run build
 npm start
 ```
 
-Build backend dibundel ke `dist/boot.js`; frontend berada di `dist/public/`.
+Build backend dibundel ke `dist/boot.js`, frontend berada di `dist/public/`, dan runtime resmi disalin ke `dist/vendor/photocraft/`. `Dockerfile` menyediakan cold build berbasis Node 22 Bookworm tanpa kebutuhan `node_modules` pada tahap runtime.
 
 ## Konfigurasi
 
@@ -109,40 +114,53 @@ Gunakan `.env.example` sebagai daftar variabel, lalu sediakan nilai melalui envi
 - `APP_SECRET`: secret sesi dari scaffold.
 - `KIMI_AGENTGW_BASE_URL` dan `KIMI_AGENTGW_API_KEY`: konfigurasi AI server-side.
 - `KIMI_STORAGE_RESOURCE_ID`: resource object storage.
-- `PHOTOCRAFT_CLI_BIN`: path opsional ke executable `photocraft-cli` pada server. Jika tidak diisi, adapter mencari `photocraft-cli` di `PATH`. File AppImage otomatis dijalankan dengan prefix `--cli`.
+- `PHOTOCRAFT_CLI_BIN`: path opsional ke executable `photocraft-cli` atau AppImage pada server. Tanpa variabel ini, Linux x86_64 memakai runtime resmi yang sudah dipin di `vendor/photocraft/`; platform lain harus menyediakan binary kompatibel melalui variabel ini.
 
-API key gateway tidak pernah dikirim ke browser. Model ID tidak di-hardcode. Jangan menaruh binary PhotoCraft atau file pengguna di repository.
+API key gateway tidak pernah dikirim ke browser dan model ID tidak di-hardcode. File pengguna tetap berada di object storage, bukan repository. Runtime PhotoCraft bawaan disertai checksum SHA-256, provenance rilis, serta lisensi MIT/Apache-2.0.
 
-### PhotoCraft CLI
+### PhotoCraft sebagai editor runtime
 
-Adapter menyediakan `GET /api/photocraft/status` dan `POST /api/photocraft/handoff`. Handoff menjalankan perintah berikut tanpa shell, dengan timeout 60 detik dan pembersihan direktori sementara:
+Canonical `InvitationDocument` dikompilasi ke command resmi PhotoCraft, bukan ke raster perantara:
 
-```bash
-photocraft-cli run canvas.png --out document.pcraft
-```
+- text menjadi native Type layer;
+- shape menjadi native Shape layer;
+- gambar menjadi frame berisi Smart Object, dengan dukungan ellipse dan rounded clipping;
+- opacity, rotation, visibility, ordering, dan locking diterjemahkan ke engine command;
+- blangko hanya dibuat pada proyeksi komposit sebagai frame `__BLANGKO__` terkunci.
 
-Input dibatasi pada PNG 32 MB. Jika binary belum terpasang, status endpoint dan dialog ekspor secara eksplisit melaporkan runtime tidak tersedia; tombol handoff dinonaktifkan. Output saat ini berupa raster `.pcraft` plus semantic manifest, **bukan** rekonstruksi layer editable penuh.
+Server menyediakan:
+
+- `GET /api/photocraft/status` untuk capability dan versi runtime;
+- `POST /api/photocraft/sync` untuk membuat preview PNG dari engine;
+- `POST /api/photocraft/handoff` untuk membuat native `.pcraft` dan semantic manifest v2.
+
+`photocraft-cli serve --no-gpu` berjalan sebagai persistent session melalui stdio JSON-lines dengan `shell:false`. Seluruh transaksi dokumen dieksekusi eksklusif agar dokumen aktif tidak tertukar oleh request bersamaan. Aset dibatasi 32 MB per file, canvas 40 juta piksel, dan preview maksimum 2400 px. Workspace sementara dibersihkan saat session ditutup.
+
+Frontend menampilkan PNG dari engine sebagai visual otoritatif, sedangkan semantic nodes transparan mempertahankan seleksi serta Moveable. Sinkronisasi memakai debounce 450 ms, pembatalan request lama, dan sequence guard. Jika engine dimatikan atau gagal, editor kembali ke canvas lokal dengan status yang terlihat jelas.
+
+Paket WebAssembly resmi juga sudah diaudit. Paket tersebut menjalankan aplikasi egui penuh, tetapi tidak menyediakan JavaScript bridge untuk sinkronisasi dokumen, command, dan seleksi dari host React. Karena itu integrasi ini memakai headless engine resmi, bukan iframe WASM yang tidak dapat disinkronkan.
 
 ## Pemeriksaan
 
 ```bash
 npm run check       # TypeScript project references
 npm run lint        # ESLint
-npm test            # domain, CV/DPI, smart canvas, CLI process, proposal, AI contract
-npm run build       # frontend + bundled backend
+npm test            # domain, CV/DPI, compiler, RPC, real engine, proposal, AI contract
+npm run build       # frontend + bundled backend + pinned PhotoCraft runtime
 npm audit --omit=dev
 ```
 
-Pengujian browser yang telah dilakukan pada vertical slice mencakup create/reload/autosave, optimistic revision conflict, upload/readback storage, AG-UI SSE, AI structured output, human approval, drag/resize/rotate, undo/redo, sidebar desktop dan mobile drawer, analisis blangko bawaan/upload, smart resize, remove/undo aset, serta ekspor PDF/PNG/master. Handoff PhotoCraft juga diuji end-to-end dengan executable tiruan; keberadaan dan kompatibilitas binary PhotoCraft asli tetap harus diverifikasi pada environment deployment.
+Pengujian browser mencakup create/reload/autosave, optimistic revision conflict, upload/readback storage, AG-UI SSE, AI structured output, human approval, drag/resize/rotate, undo/redo, sidebar desktop dan mobile drawer, analisis blangko bawaan/upload, smart resize, remove/undo aset, serta ekspor PDF/PNG/master. Integrasi runtime juga diverifikasi dengan binary resmi: render komposit dan content-only, transformasi melalui node proxy, native download, serta read-back `.pcraft` untuk memastikan Type/Shape/Smart Object dan manifest v2. Test suite mencakup fake RPC untuk kegagalan/konkurensi dan regresi engine nyata untuk komposisi kaya.
 
 ## Struktur penting
 
 ```text
 contracts/invitation.ts       Skema dokumen, node, proposal, dan preflight
 contracts/smart-canvas.ts     Resize proporsional, analisis, dan remove aset
-contracts/photocraft.ts       Compiler semantic command PhotoCraft
-api/photocraft/runtime.ts     Process runner CLI dengan timeout dan cleanup
-api/routes/photocraft.ts      Status dan handoff PhotoCraft
+contracts/photocraft.ts       Compiler semantic manifest dan native engine commands
+api/photocraft/session.ts     Persistent RPC, antrean request, binary checksum, cleanup
+api/photocraft/runtime.ts     Transaksi dokumen, render, native save, concurrency guard
+api/routes/photocraft.ts      Status, sinkronisasi canvas, dan native handoff
 api/routes/agent.ts           AG-UI SSE dan orkestrasi proposal
 api/design.ts                 Design director, panel map, dan compiler layout editable
 api/design-quality.ts         QA struktural 100 poin dan hard gate proposal
@@ -152,13 +170,16 @@ api/queries/projects.ts       Drizzle queries dan optimistic revision
 src/pages/Home.tsx            State workspace, history, autosave, AG-UI client
 src/components/editor/       Canvas, panel proyek, inspector, ekspor
 src/lib/blangko-analysis.ts   Metadata DPI dan proyeksi edge untuk lipatan
-src/lib/photocraft-runtime.ts Client status/handoff dan unduhan output
+src/lib/photocraft-runtime.ts Asset collection, sync client, native download
 src/lib/export.ts             Renderer Canvas 2D, PDF, PNG, master JSON
+vendor/photocraft/           Runtime resmi ter-pin, checksum, lisensi, atribusi
 ```
 
 ## Batas implementasi saat ini
 
-- **PhotoCraft belum menjadi runtime editor dan binary asli belum dibundel.** Integrasi awal menyediakan CLI handoff raster dan semantic manifest; editable layers penuh serta WASM canvas belum diterapkan.
+- **Runtime editor menggunakan headless PhotoCraft resmi, bukan WASM canvas yang di-embed.** Sinkronisasi saat ini membangun ulang dokumen per perubahan, belum incremental command diff. Binary bawaan khusus Linux x86_64; platform lain memerlukan `PHOTOCRAFT_CLI_BIN`.
+- **Font harus tersedia pada host runtime.** PhotoCraft melaporkan warning dan memakai fallback jika font dokumen tidak terpasang; native `.pcraft` tetap menyimpan nama font semantik.
+- **PNG/PDF umum masih memakai exporter lokal.** Native `.pcraft` memakai PhotoCraft, sedangkan PNG/PDF pada dialog umum belum dirender melalui engine.
 - **Analisis blangko bersifat decision support.** Metadata DPI menghasilkan ukuran fisik terukur, tetapi rasio standar/aspect-preserved tetap berupa estimasi. Kandidat lipatan dari CV dan fallback heuristic harus diperiksa terhadap blangko fisik sebelum produksi.
 - **QA proposal bersifat struktural.** Skor tinggi tidak membuktikan estetika, keterbacaan aktual, kesesuaian warna dengan blangko, atau kesiapan produksi. Tinjau komposit secara visual dan lakukan verifikasi fisik terpisah.
 - PDF berisi raster 300/600 ppi pada halaman berukuran tepat. Ini **belum PDF/X**, belum separasi CMYK, dan teks tidak berupa vektor.

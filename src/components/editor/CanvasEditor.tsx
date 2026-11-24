@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import Moveable from "react-moveable";
-import { Eye, EyeOff, Maximize2, Minus, Plus } from "lucide-react";
+import { Cpu, Eye, EyeOff, LoaderCircle, Maximize2, Minus, Plus, RefreshCw } from "lucide-react";
 import { getSide, type DesignNode, type InvitationDocument, type SideId } from "@contracts/invitation";
 import type { AssetUrlMap } from "@/lib/builtin-assets";
+import { usePhotoCraftRuntime } from "./usePhotoCraftRuntime";
 
 function nodeBorderRadius(node: DesignNode, scale: number): string | undefined {
   const geometry = node.kind === "shape" ? node.shapeType : node.kind === "image" ? node.clipShape : undefined;
@@ -36,6 +37,10 @@ export function CanvasEditor(props: CanvasEditorProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [viewportSize, setViewportSize] = useState({ width: 900, height: 650 });
   const selectedNode = side.nodes.find((node) => node.id === selectedNodeId) || null;
+  const [runtimeRequested, setRuntimeRequested] = useState(true);
+  const runtime = usePhotoCraftRuntime({
+    document, sideId, assets, includeBlangko: showBlangko, enabled: runtimeRequested,
+  });
 
   useEffect(() => {
     const element = viewportRef.current;
@@ -73,6 +78,16 @@ export function CanvasEditor(props: CanvasEditorProps) {
           ))}
         </div>
         <div className="canvas-view-actions">
+          <button
+            type="button"
+            className={runtimeRequested && runtime.status?.available ? "icon-text-button active" : "icon-text-button"}
+            onClick={() => setRuntimeRequested((value) => !value)}
+            aria-pressed={runtimeRequested && Boolean(runtime.status?.available)}
+            disabled={!runtime.status?.available}
+            title={runtime.status?.message || "Memeriksa runtime PhotoCraft…"}
+          >
+            <Cpu size={15} /> PhotoCraft
+          </button>
           <button type="button" className={showBlangko ? "icon-text-button active" : "icon-text-button"} onClick={onToggleBlangko} aria-pressed={showBlangko}>
             {showBlangko ? <Eye size={15} /> : <EyeOff size={15} />} Blangko
           </button>
@@ -85,14 +100,23 @@ export function CanvasEditor(props: CanvasEditorProps) {
       <div className="canvas-viewport" ref={viewportRef} onClick={() => onSelectNode(null)}>
         <div className="paper-stage" style={{ width: paperWidth, height: paperHeight }}>
           <div
-            className="paper-document"
+            className={`paper-document ${runtime.usingEngine ? "runtime-authoritative" : ""}`}
             style={{ width: paperWidth, height: paperHeight }}
             onClick={(event) => event.stopPropagation()}
           >
-            {showBlangko && side.blangkoAssetId && assets[side.blangkoAssetId] && (
+            <div className="content-only-paper" />
+            {!runtime.usingEngine && showBlangko && side.blangkoAssetId && assets[side.blangkoAssetId] && (
               <img className="blangko-layer" src={assets[side.blangkoAssetId]} alt={`Blangko ${side.label}`} draggable={false} />
             )}
-            {!showBlangko && <div className="content-only-paper" />}
+            {runtime.usingEngine && runtime.snapshot && (
+              <img
+                className="photocraft-engine-render"
+                src={`data:${runtime.snapshot.mime};base64,${runtime.snapshot.imageBase64}`}
+                alt={`Render PhotoCraft ${side.label}`}
+                draggable={false}
+                data-testid="photocraft-engine-render"
+              />
+            )}
 
             {showGuides && (
               <div className="safe-area-guide" style={{ inset: document.stock.safeMargin * scale }} aria-hidden="true" />
@@ -114,7 +138,7 @@ export function CanvasEditor(props: CanvasEditorProps) {
               <div
                 id={`node-${node.id}`}
                 key={node.id}
-                className={`design-node ${node.kind} ${selectedNodeId === node.id ? "selected" : ""} ${node.locked ? "locked" : ""}`}
+                className={`design-node ${node.kind} ${selectedNodeId === node.id ? "selected" : ""} ${node.locked ? "locked" : ""} ${runtime.usingEngine ? "runtime-proxy" : ""}`}
                 style={{
                   left: node.box.x * scale,
                   top: node.box.y * scale,
@@ -136,11 +160,11 @@ export function CanvasEditor(props: CanvasEditorProps) {
                 }}
                 onClick={(event) => { event.stopPropagation(); onSelectNode(node.id); }}
               >
-                {node.kind === "text" && node.text}
-                {node.kind === "image" && node.assetId && assets[node.assetId] && (
+                {!runtime.usingEngine && node.kind === "text" && node.text}
+                {!runtime.usingEngine && node.kind === "image" && node.assetId && assets[node.assetId] && (
                   <img src={assets[node.assetId]} alt="Aset desain" draggable={false} />
                 )}
-                {node.kind === "image" && (!node.assetId || !assets[node.assetId]) && <span>Aset tidak tersedia</span>}
+                {!runtime.usingEngine && node.kind === "image" && (!node.assetId || !assets[node.assetId]) && <span>Aset tidak tersedia</span>}
               </div>
             ))}
 
@@ -195,6 +219,17 @@ export function CanvasEditor(props: CanvasEditorProps) {
         <span>{document.stock.width} × {document.stock.height} mm</span>
         <span className="status-separator" />
         <span>{document.stock.targetPpi} ppi</span>
+        <span className="status-separator" />
+        {runtime.error ? (
+          <button type="button" className="runtime-canvas-status error" onClick={runtime.retry} title={runtime.error}>
+            <RefreshCw size={12} /> Canvas lokal — coba runtime lagi
+          </button>
+        ) : (
+          <span className={`runtime-canvas-status ${runtime.usingEngine ? "active" : ""}`}>
+            {runtime.syncing && <LoaderCircle size={12} className="spin" />}
+            {runtime.usingEngine ? `${runtime.snapshot?.runtime || "PhotoCraft"} · editable` : runtimeRequested ? "Canvas lokal" : "Canvas lokal · runtime dimatikan"}
+          </span>
+        )}
         <div className="zoom-controls">
           <button type="button" onClick={() => onZoomChange(Math.max(0.5, zoom - 0.1))} aria-label="Perkecil canvas"><Minus size={14} /></button>
           <button type="button" className="zoom-value" onClick={() => onZoomChange(1)}>{Math.round(zoom * 100)}%</button>

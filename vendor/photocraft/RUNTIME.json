@@ -9,5 +9,32 @@
   "binarySha256": "def5bcece12d7d002f42892b221a97298b32856480cc1d757763151e1bbd875c",
   "compressedSha256": "c04f2ba466981eb190f4c2130a2a535ae3606fe6008b26d905e9ea32566812bb",
   "platform": "linux-x86_64",
+  "compatibility": {
+    "mode": "bundled-glibc-loader",
+    "version": "2.36",
+    "source": "Debian 12 (bookworm)"
+  },
+  "sharedLibraries": [
+    {
+      "name": "ld-linux-x86-64.so.2",
+      "binarySha256": "593bb1d5355658e645f36e6b1f49832691b24e177209765914e4cce51499dbb4",
+      "compressedSha256": "c7a70cb799b0b4db629e13c707112d2e969ed9b9abe74a6b11a1819657d13930"
+    },
+    {
+      "name": "libc.so.6",
+      "binarySha256": "bff8750fe719e6000791b88b11747dce8772c37118d0b2348044b70819d13835",
+      "compressedSha256": "744c8b2eabbb0f2ec5577df92a15322749be3498196883519cc5521b3a62f93d"
+    },
+    {
+      "name": "libm.so.6",
+      "binarySha256": "7f2ca87f652f56b094462474b076749e90e689d0ecb9cb63c7679820b271b4e7",
+      "compressedSha256": "813e6c86c0d470d009d074d96bef9ff24e85602a68d411656f70481df64ae184"
+    },
+    {
+      "name": "libgcc_s.so.1",
+      "binarySha256": "2bd1552c47799ef67e701e81d4383061fd76059868e446e63560f0dd0d5ec14e",
+      "compressedSha256": "6eecc8375725c84edeefbb25de9995d8a7e61801cf90e585b5c9d65a50b2a000"
+    }
+  ],
   "license": "MIT OR Apache-2.0"
 }

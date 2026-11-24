@@ -9,7 +9,7 @@ import {
   type PrintProjection,
 } from "@contracts/photocraft";
 import { getSide, type InvitationDocument, type SideId } from "@contracts/invitation";
-import { getPhotoCraftSession, resolvePhotoCraftBinary } from "./session";
+import { getPhotoCraftSession, resolvePhotoCraftBinary, resolvePhotoCraftLaunch } from "./session";
 
 const CLI_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -36,7 +36,12 @@ function execute(binaryPath: string, args: string[], timeoutMs = CLI_TIMEOUT_MS)
   return new Promise((resolve, reject) => {
     const child = spawn(binaryPath, args, {
       shell: false,
-      env: { ...process.env, PHOTOCRAFT_NO_DESKTOP_INTEGRATION: "1" },
+      env: {
+        ...process.env,
+        PHOTOCRAFT_NO_DESKTOP_INTEGRATION: "1",
+        // Avoid re-exec through /proc/self/exe, which points to the bundled loader.
+        MALLOC_TRIM_THRESHOLD_: "131072",
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -63,7 +68,11 @@ function cliArguments(binaryPath: string, args: string[]) {
 export async function probePhotoCraft(binaryPath?: string): Promise<PhotoCraftStatus> {
   try {
     const binary = await resolvePhotoCraftBinary(binaryPath);
-    const { stdout, stderr } = await execute(binary, cliArguments(binary, ["--version"]));
+    const launch = await resolvePhotoCraftLaunch(binary);
+    const { stdout, stderr } = await execute(
+      launch.executable,
+      [...launch.prefixArgs, ...cliArguments(binary, ["--version"])],
+    );
     const version = (stdout || stderr).trim().split("\n")[0]?.slice(0, 120) || "versi tidak dilaporkan";
     return {
       available: true,

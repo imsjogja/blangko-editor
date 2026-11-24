@@ -83,7 +83,9 @@ export class PhotoCraftSession {
     this.root = await mkdtemp(path.join(tmpdir(), "blangko-photocraft-session-"));
     await mkdir(path.join(this.root, "assets"), { recursive: true });
     const fontEnvironment = await prepareFontEnvironment(this.root);
-    const child = spawn(this.binaryPath, [
+    const launch = await resolvePhotoCraftLaunch(this.binaryPath);
+    const child = spawn(launch.executable, [
+      ...launch.prefixArgs,
       "serve", "--no-gpu",
       "--automation-read-root", this.root,
       "--automation-write-root", this.root,
@@ -93,6 +95,8 @@ export class PhotoCraftSession {
       env: {
         ...process.env,
         PHOTOCRAFT_NO_DESKTOP_INTEGRATION: "1",
+        // Keep the CLI's intended malloc tuning without re-executing the loader.
+        MALLOC_TRIM_THRESHOLD_: "131072",
         PHOTOCRAFT_CONFIG_DIR: path.join(this.root, "config"),
         ...fontEnvironment,
       },
@@ -232,6 +236,38 @@ function bundledDirectory(): string | null {
   return candidates.find((candidate) => existsSync(path.join(candidate, "photocraft-cli.gz"))) ?? null;
 }
 
+interface SharedLibraryMetadata {
+  name: string;
+  binarySha256: string;
+  compressedSha256: string;
+}
+
+async function materializeVerifiedGzip(
+  archive: string,
+  target: string,
+  compressedSha256: string,
+  binarySha256: string,
+  mode: number,
+): Promise<void> {
+  if (await sha256(archive) !== compressedSha256) {
+    throw new Error(`Checksum paket runtime ${path.basename(archive)} tidak cocok.`);
+  }
+  if (await fileExists(target) && await sha256(target) === binarySha256) return;
+  await mkdir(path.dirname(target), { recursive: true });
+  const temporary = path.join(path.dirname(target), `${randomUUID()}.tmp`);
+  try {
+    await pipeline(createReadStream(archive), createGunzip(), createWriteStream(temporary));
+    if (await sha256(temporary) !== binarySha256) {
+      throw new Error(`Checksum executable ${path.basename(target)} tidak cocok dengan rilis yang dipin.`);
+    }
+    await chmod(temporary, mode);
+    await rm(target, { force: true });
+    await rename(temporary, target);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
 export async function resolvePhotoCraftBinary(explicitPath?: string): Promise<string> {
   const configured = explicitPath?.trim() || process.env.PHOTOCRAFT_CLI_BIN?.trim();
   if (configured) return configured;
@@ -243,28 +279,45 @@ export async function resolvePhotoCraftBinary(explicitPath?: string): Promise<st
   const metadata = JSON.parse(await readFile(path.join(directory, "RUNTIME.json"), "utf8")) as {
     binarySha256: string;
     compressedSha256: string;
+    sharedLibraries?: SharedLibraryMetadata[];
   };
-  const archive = path.join(directory, "photocraft-cli.gz");
-  if (await sha256(archive) !== metadata.compressedSha256) {
-    throw new Error("Checksum paket runtime PhotoCraft tidak cocok.");
-  }
   const targetDirectory = path.join(tmpdir(), `blangko-photocraft-${metadata.binarySha256.slice(0, 16)}`);
   const target = path.join(targetDirectory, "photocraft-cli");
-  if (await fileExists(target) && await sha256(target) === metadata.binarySha256) return target;
-  await mkdir(targetDirectory, { recursive: true });
-  const temporary = path.join(targetDirectory, `${randomUUID()}.tmp`);
-  try {
-    await pipeline(createReadStream(archive), createGunzip(), createWriteStream(temporary));
-    if (await sha256(temporary) !== metadata.binarySha256) {
-      throw new Error("Checksum executable PhotoCraft tidak cocok dengan rilis yang dipin.");
-    }
-    await chmod(temporary, 0o700);
-    await rm(target, { force: true });
-    await rename(temporary, target);
-    return target;
-  } finally {
-    await rm(temporary, { force: true });
+  await materializeVerifiedGzip(
+    path.join(directory, "photocraft-cli.gz"),
+    target,
+    metadata.compressedSha256,
+    metadata.binarySha256,
+    0o700,
+  );
+  for (const library of metadata.sharedLibraries ?? []) {
+    if (!/^[a-z0-9._-]+$/i.test(library.name)) throw new Error("Nama shared library PhotoCraft tidak valid.");
+    await materializeVerifiedGzip(
+      path.join(directory, "glibc", `${library.name}.gz`),
+      path.join(targetDirectory, "glibc", library.name),
+      library.compressedSha256,
+      library.binarySha256,
+      library.name.startsWith("ld-linux") ? 0o700 : 0o600,
+    );
   }
+  return target;
+}
+
+export interface PhotoCraftLaunch {
+  executable: string;
+  prefixArgs: string[];
+}
+
+export async function resolvePhotoCraftLaunch(binaryPath: string): Promise<PhotoCraftLaunch> {
+  const libraryDirectory = path.join(path.dirname(binaryPath), "glibc");
+  const loader = path.join(libraryDirectory, "ld-linux-x86-64.so.2");
+  if (!await fileExists(loader)) return { executable: binaryPath, prefixArgs: [] };
+  return {
+    executable: loader,
+    // The published runtime can have an older glibc than the official CLI.
+    // Its pinned loader and libraries make execution independent of that host version.
+    prefixArgs: ["--inhibit-cache", "--library-path", libraryDirectory, binaryPath],
+  };
 }
 
 const sessions = new Map<string, PhotoCraftSession>();

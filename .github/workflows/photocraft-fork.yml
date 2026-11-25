@@ -22,6 +22,7 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       PHOTOCRAFT_BUILD_ROOT: ${{ github.workspace }}/.photocraft-build
       TRUNK: ${{ github.workspace }}/.tools/trunk
+      WASM_OPT: ${{ github.workspace }}/.tools/binaryen-version_131/bin/wasm-opt
       RAYON_NUM_THREADS: "1"
     steps:
       - uses: actions/checkout@v4
@@ -51,6 +52,14 @@ jobs:
             -o .tools/trunk.tar.gz
           tar -xzf .tools/trunk.tar.gz -C .tools
           .tools/trunk --version
+
+      - name: Install Binaryen
+        run: |
+          curl -fL --retry 5 --retry-all-errors \
+            https://github.com/WebAssembly/binaryen/releases/download/version_131/binaryen-version_131-x86_64-linux.tar.gz \
+            -o .tools/binaryen.tar.gz
+          tar -xzf .tools/binaryen.tar.gz -C .tools
+          "$WASM_OPT" --version
 
       - name: Build and package fork
         run: npm run photocraft:fork

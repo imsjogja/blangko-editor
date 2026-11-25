@@ -1,16 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import Moveable from "react-moveable";
-import { Cpu, Eye, EyeOff, LoaderCircle, Maximize2, Minus, Plus, RefreshCw } from "lucide-react";
-import { getSide, type DesignNode, type InvitationDocument, type SideId } from "@contracts/invitation";
+import { Cpu, Download, Eye, EyeOff, FileCode2, LoaderCircle, RefreshCw } from "lucide-react";
+import type { DesignNode, InvitationDocument, SideId } from "@contracts/invitation";
 import type { AssetUrlMap } from "@/lib/builtin-assets";
+import { PhotoCraftCanvasBridge, downloadNativeBytes, photoCraftBytes } from "@/lib/photocraft-canvas";
 import { usePhotoCraftRuntime } from "./usePhotoCraftRuntime";
-
-function nodeBorderRadius(node: DesignNode, scale: number): string | undefined {
-  const geometry = node.kind === "shape" ? node.shapeType : node.kind === "image" ? node.clipShape : undefined;
-  if (geometry === "ellipse") return "50%";
-  if (geometry === "rounded-rectangle") return `${(node.cornerRadius ?? 3) * scale}px`;
-  return undefined;
-}
 
 interface CanvasEditorProps {
   document: InvitationDocument;
@@ -29,190 +22,193 @@ interface CanvasEditorProps {
 }
 
 export function CanvasEditor(props: CanvasEditorProps) {
-  const {
-    document, sideId, assets, selectedNodeId, showBlangko, showGuides, zoom,
-    onSideChange, onSelectNode, onUpdateNode, onToggleBlangko, onToggleGuides, onZoomChange,
-  } = props;
-  const side = getSide(document, sideId);
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const [viewportSize, setViewportSize] = useState({ width: 900, height: 650 });
-  const selectedNode = side.nodes.find((node) => node.id === selectedNodeId) || null;
-  const [runtimeRequested, setRuntimeRequested] = useState(true);
-  const runtime = usePhotoCraftRuntime({
-    document, sideId, assets, includeBlangko: showBlangko, enabled: runtimeRequested,
-  });
+  const { document, sideId, assets, selectedNodeId, showBlangko, onSideChange, onSelectNode, onToggleBlangko } = props;
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const bridgeRef = useRef<PhotoCraftCanvasBridge | null>(null);
+  const openedSnapshot = useRef<object | null>(null);
+  const baselineRevision = useRef<number | null>(null);
+  const latestContentRevision = useRef<number | null>(null);
+  const opening = useRef(false);
+  const selectedRef = useRef(selectedNodeId);
+  const nativeSideRef = useRef<SideId>(sideId);
+  const [ready, setReady] = useState(false);
+  const [openingDocument, setOpeningDocument] = useState(false);
+  const [nativeDirty, setNativeDirty] = useState(false);
+  const nativeDirtyRef = useRef(false);
+  const [canonicalPending, setCanonicalPending] = useState(false);
+  const [nativeRevision, setNativeRevision] = useState<number | null>(null);
+  const [bridgeError, setBridgeError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
+  const runtime = usePhotoCraftRuntime({ document, sideId, assets, includeBlangko: showBlangko, enabled: true });
+
+  useEffect(() => { selectedRef.current = selectedNodeId; }, [selectedNodeId]);
 
   useEffect(() => {
-    const element = viewportRef.current;
-    if (!element) return;
-    const observer = new ResizeObserver(([entry]) => {
-      setViewportSize({ width: entry.contentRect.width, height: entry.contentRect.height });
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    const bridge = new PhotoCraftCanvasBridge();
+    bridgeRef.current = bridge;
+    bridge.attach(iframe);
+    bridge.onRevision((revision) => {
+      const current = typeof revision.revision === "number" ? revision.revision : null;
+      const content = typeof revision.pixelRevision === "number" ? revision.pixelRevision : current;
+      setNativeRevision(current);
+      latestContentRevision.current = content;
+      if (baselineRevision.current === null && content !== null) {
+        baselineRevision.current = content;
+        nativeDirtyRef.current = false;
+        setNativeDirty(false);
+      } else if (content !== baselineRevision.current) {
+        nativeDirtyRef.current = true;
+        setNativeDirty(true);
+      }
+      const selected = revision.selected?.find((layer) => layer.name.startsWith("blangko-node:"));
+      if (selected) {
+        const id = selected.name.slice("blangko-node:".length);
+        if (selectedRef.current !== id) onSelectNode(id);
+      } else if (selectedRef.current) {
+        onSelectNode(null);
+      }
     });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
+    void bridge.whenReady()
+      .then(() => setReady(true))
+      .catch((error: unknown) => setBridgeError(error instanceof Error ? error.message : "PhotoCraft WASM gagal dimuat."));
+    return () => {
+      bridge.detach();
+      bridgeRef.current = null;
+      openedSnapshot.current = null;
+      baselineRevision.current = null;
+      latestContentRevision.current = null;
+      nativeDirtyRef.current = false;
+      opening.current = false;
+      setReady(false);
+    };
+  }, [reloadToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const fitScale = Math.min(
-    Math.max(1.2, (viewportSize.width - 96) / document.stock.width),
-    Math.max(1.2, (viewportSize.height - 118) / document.stock.height),
-  );
-  const scale = fitScale * zoom;
-  const paperWidth = document.stock.width * scale;
-  const paperHeight = document.stock.height * scale;
-  const fontSize = (node: DesignNode) => (node.fontSize || 12) * 25.4 / 72 * scale;
+  useEffect(() => {
+    const snapshot = runtime.snapshot;
+    const bridge = bridgeRef.current;
+    if (!ready || !snapshot?.fileBase64 || !bridge || openedSnapshot.current === snapshot || opening.current) return;
+    if (nativeDirtyRef.current && openedSnapshot.current) {
+      setCanonicalPending(true);
+      return;
+    }
+    setCanonicalPending(false);
+    opening.current = true;
+    setOpeningDocument(true);
+    setBridgeError(null);
+    baselineRevision.current = null;
+    latestContentRevision.current = null;
+    void bridge.open(snapshot.fileName || `blangko-${sideId}.pcraft`, photoCraftBytes(snapshot.fileBase64))
+      .then(() => {
+        openedSnapshot.current = snapshot;
+        nativeSideRef.current = sideId;
+        nativeDirtyRef.current = false;
+        setNativeDirty(false);
+      })
+      .catch((error: unknown) => setBridgeError(error instanceof Error ? error.message : "Dokumen native gagal dibuka."))
+      .finally(() => {
+        opening.current = false;
+        setOpeningDocument(false);
+      });
+  }, [ready, runtime.snapshot, sideId, openingDocument]);
+
+  useEffect(() => {
+    if (!ready || !selectedNodeId || nativeDirty) return;
+    // Selection originating in the parent inspector is projected to the native layer.
+    // A native dirty document remains authoritative until the next canonical open.
+    void bridgeRef.current?.command("engine.execute", {
+      command: "layer.select",
+      params: { layer: `blangko-node:${selectedNodeId}` },
+    }).catch(() => undefined);
+  }, [selectedNodeId, ready, nativeDirty]);
+
+  const exportNative = async (format: "pcraft" | "png") => {
+    const bridge = bridgeRef.current;
+    if (!bridge || exporting) return;
+    setExporting(true);
+    setBridgeError(null);
+    try {
+      const result = await bridge.export(format);
+      downloadNativeBytes(
+        result.bytes,
+        `${document.title.replace(/[^a-z0-9-_]+/gi, "-")}-${nativeSideRef.current}-native.${format}`,
+        format === "png" ? "image/png" : "application/octet-stream",
+      );
+      if (format === "pcraft") {
+        baselineRevision.current = latestContentRevision.current;
+        nativeDirtyRef.current = false;
+        setNativeDirty(false);
+      }
+    } catch (error) {
+      setBridgeError(error instanceof Error ? error.message : "Ekspor native gagal.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const reloadNative = (discardNative = false) => {
+    if (discardNative && nativeDirtyRef.current && !window.confirm("Muat versi proyek dan mengganti dokumen native yang belum diekspor?")) return;
+    nativeDirtyRef.current = false;
+    setNativeDirty(false);
+    setCanonicalPending(false);
+    setBridgeError(null);
+    setReloadToken((value) => value + 1);
+    runtime.retry();
+  };
+
+  const error = bridgeError || runtime.error;
+  const loading = !ready || runtime.syncing || openingDocument;
 
   return (
-    <section className="canvas-workspace" aria-label="Workspace canvas">
+    <section className="canvas-workspace" aria-label="Workspace PhotoCraft native">
       <div className="canvas-toolbar">
         <div className="side-tabs" aria-label="Sisi undangan">
           {document.sides.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={item.id === sideId ? "side-tab active" : "side-tab"}
-              onClick={() => { onSideChange(item.id); onSelectNode(null); }}
-            >
-              {item.label}
-              <span>{item.id === "outside" ? "A" : "B"}</span>
+            <button key={item.id} type="button" className={item.id === sideId ? "side-tab active" : "side-tab"} onClick={() => { onSideChange(item.id); onSelectNode(null); }}>
+              {item.label}<span>{item.id === "outside" ? "A" : "B"}</span>
             </button>
           ))}
         </div>
         <div className="canvas-view-actions">
-          <button
-            type="button"
-            className={runtimeRequested && runtime.status?.available ? "icon-text-button active" : "icon-text-button"}
-            onClick={() => setRuntimeRequested((value) => !value)}
-            aria-pressed={runtimeRequested && Boolean(runtime.status?.available)}
-            disabled={!runtime.status?.available}
-            title={runtime.status?.message || "Memeriksa runtime PhotoCraft…"}
-          >
-            <Cpu size={15} /> PhotoCraft
-          </button>
+          <span className="icon-text-button active" title="Fork PhotoCraft WASM dengan bridge dokumen dua arah"><Cpu size={15} /> PhotoCraft Native</span>
           <button type="button" className={showBlangko ? "icon-text-button active" : "icon-text-button"} onClick={onToggleBlangko} aria-pressed={showBlangko}>
             {showBlangko ? <Eye size={15} /> : <EyeOff size={15} />} Blangko
           </button>
-          <button type="button" className={showGuides ? "icon-text-button active" : "icon-text-button"} onClick={onToggleGuides} aria-pressed={showGuides}>
-            <Eye size={15} /> Garis bantu
+          <button type="button" className="icon-text-button" disabled={!ready || exporting || loading} onClick={() => void exportNative("png")} title="Render dan unduh PNG dari dokumen native yang sedang aktif">
+            {exporting ? <LoaderCircle size={15} className="spin" /> : <Download size={15} />} PNG
+          </button>
+          <button type="button" className="icon-text-button" disabled={!ready || exporting || loading} onClick={() => void exportNative("pcraft")} title="Unduh .pcraft dari dokumen native, termasuk perubahan di canvas">
+            <FileCode2 size={15} /> .pcraft
           </button>
         </div>
       </div>
 
-      <div className="canvas-viewport" ref={viewportRef} onClick={() => onSelectNode(null)}>
-        <div className="paper-stage" style={{ width: paperWidth, height: paperHeight }}>
-          <div
-            className={`paper-document ${runtime.usingEngine ? "runtime-authoritative" : ""}`}
-            style={{ width: paperWidth, height: paperHeight }}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="content-only-paper" />
-            {!runtime.usingEngine && showBlangko && side.blangkoAssetId && assets[side.blangkoAssetId] && (
-              <img className="blangko-layer" src={assets[side.blangkoAssetId]} alt={`Blangko ${side.label}`} draggable={false} />
-            )}
-            {runtime.usingEngine && runtime.snapshot && (
-              <img
-                className="photocraft-engine-render"
-                src={`data:${runtime.snapshot.mime};base64,${runtime.snapshot.imageBase64}`}
-                alt={`Render PhotoCraft ${side.label}`}
-                draggable={false}
-                data-testid="photocraft-engine-render"
-              />
-            )}
-
-            {showGuides && (
-              <div className="safe-area-guide" style={{ inset: document.stock.safeMargin * scale }} aria-hidden="true" />
-            )}
-            {showGuides && side.foldLines.map((fold) => (
-              <div
-                key={fold.id}
-                className={`fold-guide ${fold.axis}`}
-                style={fold.axis === "vertical"
-                  ? { left: fold.positionMm * scale }
-                  : { top: fold.positionMm * scale }}
-                aria-hidden="true"
-              >
-                <span>{fold.kind === "fold" ? "LIPAT" : fold.kind.toUpperCase()}</span>
-              </div>
-            ))}
-
-            {[...side.nodes].sort((a, b) => a.zIndex - b.zIndex).map((node) => (
-              <div
-                id={`node-${node.id}`}
-                key={node.id}
-                className={`design-node ${node.kind} ${selectedNodeId === node.id ? "selected" : ""} ${node.locked ? "locked" : ""} ${runtime.usingEngine ? "runtime-proxy" : ""}`}
-                style={{
-                  left: node.box.x * scale,
-                  top: node.box.y * scale,
-                  width: node.box.width * scale,
-                  height: Math.max(node.box.height * scale, node.kind === "shape" ? 2 : 12),
-                  transform: `rotate(${node.rotation}deg)`,
-                  opacity: node.visible ? node.opacity : 0.18,
-                  zIndex: node.zIndex + 5,
-                  color: node.color,
-                  backgroundColor: node.kind === "shape" ? node.backgroundColor : undefined,
-                  border: node.borderWidth ? `${node.borderWidth * scale}px solid ${node.borderColor}` : undefined,
-                  borderRadius: nodeBorderRadius(node, scale),
-                  fontFamily: node.fontFamily,
-                  fontWeight: node.fontWeight,
-                  fontStyle: node.fontStyle,
-                  fontSize: fontSize(node),
-                  letterSpacing: node.letterSpacing ? node.letterSpacing * 25.4 / 72 * scale : undefined,
-                  textAlign: node.textAlign,
-                }}
-                onClick={(event) => { event.stopPropagation(); onSelectNode(node.id); }}
-              >
-                {!runtime.usingEngine && node.kind === "text" && node.text}
-                {!runtime.usingEngine && node.kind === "image" && node.assetId && assets[node.assetId] && (
-                  <img src={assets[node.assetId]} alt="Aset desain" draggable={false} />
-                )}
-                {!runtime.usingEngine && node.kind === "image" && (!node.assetId || !assets[node.assetId]) && <span>Aset tidak tersedia</span>}
-              </div>
-            ))}
-
-            {selectedNode && !selectedNode.locked && selectedNode.visible && (
-              <Moveable
-                target={`#node-${selectedNode.id}`}
-                draggable
-                resizable
-                rotatable
-                throttleDrag={0}
-                throttleResize={0}
-                throttleRotate={0}
-                origin={false}
-                onDrag={({ target, left, top }) => {
-                  target.style.left = `${left}px`;
-                  target.style.top = `${top}px`;
-                }}
-                onDragEnd={({ lastEvent }) => {
-                  if (!lastEvent) return;
-                  onUpdateNode(selectedNode.id, {
-                    box: { ...selectedNode.box, x: lastEvent.left / scale, y: lastEvent.top / scale },
-                  });
-                }}
-                onResize={({ target, width, height, drag }) => {
-                  target.style.width = `${width}px`;
-                  target.style.height = `${height}px`;
-                  target.style.left = `${drag.left}px`;
-                  target.style.top = `${drag.top}px`;
-                }}
-                onResizeEnd={({ lastEvent }) => {
-                  if (!lastEvent) return;
-                  onUpdateNode(selectedNode.id, {
-                    box: {
-                      x: lastEvent.drag.left / scale,
-                      y: lastEvent.drag.top / scale,
-                      width: lastEvent.width / scale,
-                      height: lastEvent.height / scale,
-                    },
-                  });
-                }}
-                onRotate={({ target, transform }) => { target.style.transform = transform; }}
-                onRotateEnd={({ lastEvent }) => {
-                  if (lastEvent) onUpdateNode(selectedNode.id, { rotation: lastEvent.rotation });
-                }}
-              />
-            )}
+      <div className="photocraft-native-stage">
+        <iframe
+          key={reloadToken}
+          ref={iframeRef}
+          className="photocraft-native-frame"
+          src="/photocraft/index.html"
+          title="PhotoCraft native canvas"
+          allow="clipboard-read; clipboard-write"
+          data-testid="photocraft-native-canvas"
+        />
+        {loading && !error && (
+          <div className="photocraft-native-loading">
+            <LoaderCircle className="spin" size={24} />
+            <strong>{!ready ? "Memuat PhotoCraft WASM…" : "Membuka dokumen native…"}</strong>
+            <small>Menyiapkan Type, Shape, Smart Object, seleksi, dan transformasi native.</small>
           </div>
-        </div>
+        )}
+        {error && (
+          <div className="photocraft-native-loading error" role="alert">
+            <strong>Canvas native belum dapat disinkronkan</strong>
+            <small>{error}</small>
+            <button type="button" className="secondary-button" onClick={() => reloadNative(true)}><RefreshCw size={14} />Muat ulang canvas</button>
+          </div>
+        )}
       </div>
 
       <div className="canvas-statusbar">
@@ -220,22 +216,12 @@ export function CanvasEditor(props: CanvasEditorProps) {
         <span className="status-separator" />
         <span>{document.stock.targetPpi} ppi</span>
         <span className="status-separator" />
-        {runtime.error ? (
-          <button type="button" className="runtime-canvas-status error" onClick={runtime.retry} title={runtime.error}>
-            <RefreshCw size={12} /> Canvas lokal — coba runtime lagi
-          </button>
-        ) : (
-          <span className={`runtime-canvas-status ${runtime.usingEngine ? "active" : ""}`}>
-            {runtime.syncing && <LoaderCircle size={12} className="spin" />}
-            {runtime.usingEngine ? `${runtime.snapshot?.runtime || "PhotoCraft"} · editable` : runtimeRequested ? "Canvas lokal" : "Canvas lokal · runtime dimatikan"}
-          </span>
-        )}
-        <div className="zoom-controls">
-          <button type="button" onClick={() => onZoomChange(Math.max(0.5, zoom - 0.1))} aria-label="Perkecil canvas"><Minus size={14} /></button>
-          <button type="button" className="zoom-value" onClick={() => onZoomChange(1)}>{Math.round(zoom * 100)}%</button>
-          <button type="button" onClick={() => onZoomChange(Math.min(2, zoom + 0.1))} aria-label="Perbesar canvas"><Plus size={14} /></button>
-          <button type="button" onClick={() => onZoomChange(1)} aria-label="Sesuaikan canvas"><Maximize2 size={14} /></button>
-        </div>
+        <span className={`native-canvas-badge ${nativeDirty ? "dirty" : ""}`}>
+          {loading && <LoaderCircle size={12} className="spin" />}
+          {nativeDirty ? `Revisi native ${nativeRevision ?? "—"} · belum diekspor` : ready ? "Native canvas · tersinkron" : "WASM starting"}
+        </span>
+        {canonicalPending && <button type="button" className="native-sync-pending" onClick={() => reloadNative(true)} title="Versi proyek berubah. Dokumen native dipertahankan sampai Anda memilih memuatnya.">Versi proyek tertunda · Muat</button>}
+        <span className="panel-hint">Gunakan .pcraft / PNG di toolbar untuk hasil edit native terbaru.</span>
       </div>
     </section>
   );

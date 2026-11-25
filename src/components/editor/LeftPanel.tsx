@@ -1,15 +1,17 @@
 import { useRef, useState } from "react";
-import { Bot, Check, FileImage, FolderCog, ImagePlus, LoaderCircle, ScanLine, Sparkles, Trash2, Upload, X } from "lucide-react";
+import { Bot, FileImage, FolderCog, ImagePlus, LoaderCircle, ScanLine, Trash2, Upload } from "lucide-react";
+import type { Message } from "@ag-ui/core";
 import {
   getSide,
   type DesignProposal,
-  type DesignStyle,
   type InvitationDocument,
   type ProjectAsset,
   type SideId,
 } from "@contracts/invitation";
 import type { AssetUrlMap } from "@/lib/builtin-assets";
 import { resizeSmartCanvas } from "@contracts/smart-canvas";
+import type { OrnamentProposal } from "@contracts/agent";
+import { AgentChat, type AgentSendInput } from "./AgentChat";
 
 export interface AgentProgress {
   stage: string;
@@ -25,6 +27,8 @@ interface LeftPanelProps {
   analyzing: boolean;
   agentRunning: boolean;
   agentProgress: AgentProgress[];
+  agentMessages: Message[];
+  agentError: string | null;
   proposal: DesignProposal | null;
   onChange: (document: InvitationDocument) => void;
   onUpload: (file: File, kind: ProjectAsset["kind"]) => void;
@@ -32,29 +36,24 @@ interface LeftPanelProps {
   onUseBlangko: (asset: ProjectAsset) => void;
   onAnalyzeBlangko: (asset: ProjectAsset) => void;
   onRemoveAsset: (asset: ProjectAsset) => void;
-  onGenerate: (style: DesignStyle, prompt: string) => void;
-  onApplyProposal: () => void;
+  onGenerate: (input: AgentSendInput) => void;
+  onAgentWelcome: () => void;
+  onCancelAgent: () => void;
+  onApplyProposal: (proposal: DesignProposal) => void;
+  onApplyOrnament: (proposal: OrnamentProposal) => void;
   onDismissProposal: () => void;
 }
-
-const styles: Array<{ id: DesignStyle; label: string; detail: string }> = [
-  { id: "modern", label: "Modern", detail: "Rapi & kontras" },
-  { id: "rustic", label: "Rustic", detail: "Hangat & organik" },
-  { id: "classic", label: "Klasik", detail: "Formal & editorial" },
-];
 
 export function LeftPanel(props: LeftPanelProps) {
   const [tab, setTab] = useState<"project" | "assets" | "agent">("project");
   const [assetKind, setAssetKind] = useState<ProjectAsset["kind"]>("photo");
   const [removeCandidate, setRemoveCandidate] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState("Buat nama pasangan sebagai fokus utama dan jauhkan semua teks dari lipatan.");
   const blangkoInput = useRef<HTMLInputElement>(null);
   const assetInput = useRef<HTMLInputElement>(null);
-  const { document, sideId, assets, uploading, analyzing, agentRunning, agentProgress, proposal } = props;
+  const { document, sideId, assets, uploading, analyzing } = props;
   const side = getSide(document, sideId);
   const activeBlangko = document.assets.find((asset) => asset.id === side.blangkoAssetId);
   const analysis = activeBlangko?.analysis;
-  const latestProgress = agentProgress.at(-1);
 
   const updateStock = (key: keyof InvitationDocument["stock"], value: number | boolean) => {
     if ((key === "width" || key === "height") && typeof value === "number") {
@@ -151,7 +150,7 @@ export function LeftPanel(props: LeftPanelProps) {
               {document.assets.map((asset) => (
                 <article className="asset-item" key={asset.id}>
                   <div className="asset-thumbnail">{assets[asset.id] ? <img src={assets[asset.id]} alt="" /> : <FileImage size={20} />}</div>
-                  <div className="asset-copy"><strong>{asset.name}</strong><span>{asset.kind} · {asset.source === "builtin" ? "bawaan" : "tersimpan"}</span></div>
+                  <div className="asset-copy"><strong>{asset.name}</strong><span>{asset.kind} · {asset.source === "builtin" ? "bawaan" : asset.source === "generated" ? "vektor agen" : "tersimpan"}</span></div>
                   <div className="asset-actions">
                     {asset.kind === "blangko" ? (
                       <button type="button" className="small-button" onClick={() => props.onUseBlangko(asset)}>Gunakan</button>
@@ -173,57 +172,16 @@ export function LeftPanel(props: LeftPanelProps) {
         )}
 
         {tab === "agent" && (
-          <div className="panel-section-stack">
-            <section className="panel-section">
-              <div className="section-heading"><span>DESIGN AGENT</span><span className="protocol-badge">AG-UI</span></div>
-              <p className="panel-hint">Agen mengusulkan perubahan. Tidak ada layer yang ditimpa sebelum Anda menyetujuinya.</p>
-              <div className="style-choice">
-                {styles.map((style) => (
-                  <button key={style.id} type="button" className={document.design.style === style.id ? "active" : ""} onClick={() => updateDesign("style", style.id)}>
-                    <strong>{style.label}</strong><span>{style.detail}</span>
-                  </button>
-                ))}
-              </div>
-              <label className="field-label">Instruksi<textarea rows={4} value={prompt} maxLength={2000} onChange={(event) => setPrompt(event.target.value)} /></label>
-              <button type="button" className="primary-button full-width" disabled={agentRunning} onClick={() => props.onGenerate(document.design.style, prompt)}>
-                {agentRunning ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
-                {agentRunning ? "Agen sedang bekerja…" : `Generate sisi ${side.label}`}
-              </button>
-            </section>
-
-            {latestProgress && (
-              <section className="panel-section agent-progress-section">
-                <div className="progress-track"><span style={{ width: `${latestProgress.progress}%` }} /></div>
-                <p>{latestProgress.message}</p>
-                <div className="agent-event-log">
-                  {agentProgress.slice(-3).map((item, index) => <span key={`${item.stage}-${index}`}>{item.stage} · {item.progress}%</span>)}
-                </div>
-              </section>
-            )}
-
-            {proposal && (
-              <section className="proposal-panel">
-                <div className="proposal-heading"><span className={proposal.mode === "ai" ? "mode-badge ai" : "mode-badge"}>{proposal.mode === "ai" ? "AI" : "SKILL"}</span><button type="button" className="icon-button" onClick={props.onDismissProposal} aria-label="Tutup proposal"><X size={15} /></button></div>
-                <h3>Proposal {proposal.sideId === "outside" ? "Luar" : "Dalam"}</h3>
-                <p>{proposal.summary}</p>
-                <span className="proposal-count">{proposal.nodes.length} objek editable</span>
-                {proposal.quality && (
-                  <div className="proposal-quality" aria-label="Penilaian struktural proposal">
-                    <div className="quality-score"><strong>{proposal.quality.score}<span>/100</span></strong><span>Skor struktur</span></div>
-                    <span className={`quality-status ${proposal.quality.status}`}>
-                      {proposal.quality.status === "needs-revision" ? "Perlu revisi struktur" : proposal.quality.status === "approved-for-preview" ? "Preview disetujui" : "Perlu tinjauan visual"}
-                    </span>
-                    <div className="quality-gates">
-                      {proposal.quality.hardGates.map((gate) => <span key={gate.id} className={gate.passed ? "passed" : "failed"}>{gate.passed ? <Check size={11} /> : <X size={11} />}{gate.label}</span>)}
-                    </div>
-                    <p>Belum print-ready. Skor struktur tidak menggantikan inspeksi komposit dan preflight fisik.</p>
-                  </div>
-                )}
-                {proposal.warnings.map((warning) => <div className="warning-copy" key={warning}>{warning}</div>)}
-                <button type="button" className="primary-button full-width" onClick={props.onApplyProposal}><Check size={16} />Terapkan proposal</button>
-              </section>
-            )}
-          </div>
+          <AgentChat
+            messages={props.agentMessages}
+            running={props.agentRunning}
+            error={props.agentError}
+            onWelcome={props.onAgentWelcome}
+            onSend={props.onGenerate}
+            onCancel={props.onCancelAgent}
+            onApplyDesign={props.onApplyProposal}
+            onApplyOrnament={props.onApplyOrnament}
+          />
         )}
       </div>
     </aside>

@@ -410,3 +410,71 @@ code, kbd, .mono { font-family: "Fira Code", "Courier New", monospace; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* AG-UI conversation and application-owned generative UI */
+.panel-scroll:has(.agent-chat) { overflow: hidden; }
+.agent-chat { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--surface-panel); }
+.agent-chat-heading { min-height: 48px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--component-border); }
+.agent-chat-heading > div { display: flex; align-items: center; gap: 8px; }
+.agent-chat-heading strong { font-size: 12px; font-weight: 600; }
+.agent-message-stream { flex: 1 1 0; min-height: 160px; overflow-y: auto; overscroll-behavior: contain; padding: 14px 12px 20px; scrollbar-gutter: stable; }
+.chat-empty, .chat-thinking { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px 8px; color: var(--text-muted); font-size: 10px; }
+.chat-message { margin: 0 0 14px; max-width: 94%; }
+.chat-message > span { display: block; margin-bottom: 5px; color: var(--text-muted); font: 8px/1 "Fira Code", monospace; letter-spacing: .1em; }
+.chat-message p { margin: 0; white-space: pre-wrap; color: var(--text-secondary); font-size: 11px; line-height: 1.6; }
+.chat-message.user { margin-left: auto; padding: 10px 11px; background: var(--surface-raised); border-left: 2px solid var(--action-primary); }
+.chat-message.user > span { color: var(--action-primary-hover); }
+.chat-message.assistant { padding-left: 2px; }
+.chat-error { margin: 0 0 14px; padding: 11px; border: 1px solid var(--status-error); background: var(--surface-raised); }
+.chat-error strong { color: oklch(0.74 0.1 28); font-size: 11px; }
+.chat-error p { margin: 6px 0; color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
+.chat-error small { color: var(--text-muted); font-size: 9px; line-height: 1.45; }
+.agent-generative-card { margin: 0 0 16px; padding: 12px; border: 1px solid var(--component-border); background: var(--surface-raised); }
+.generative-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 11px; color: var(--action-primary-hover); font: 9px/1 "Fira Code", monospace; letter-spacing: .1em; }
+.agent-generative-card > p { color: var(--text-secondary); font-size: 11px; line-height: 1.55; }
+.agent-generative-card > small { display: block; margin: 9px 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
+.agent-preset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.agent-preset-grid button { min-width: 0; padding: 9px; border: 1px solid var(--component-border); background: var(--component-field); color: var(--text-primary); text-align: left; transition: border-color 150ms, transform 150ms; }
+.agent-preset-grid button:hover { border-color: var(--action-primary); transform: translateY(-1px); }
+.agent-preset-grid strong, .agent-preset-grid small, .agent-preset-grid em { display: block; }
+.agent-preset-grid strong { margin-top: 8px; font-size: 11px; }
+.agent-preset-grid small { min-height: 42px; margin-top: 5px; color: var(--text-muted); font-size: 9px; line-height: 1.45; }
+.agent-preset-grid em { margin-top: 7px; color: var(--action-primary-hover); font: normal 8px/1.35 "Fira Code", monospace; }
+.preset-palette { display: flex; gap: 3px; }
+.preset-palette i { width: 16px; height: 5px; border: 1px solid oklch(1 0 0 / .08); }
+.preset-gallery > p { margin: 11px 0 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
+.proposal-metrics { display: flex; gap: 14px; margin: 10px 0; color: var(--text-muted); font-size: 9px; }
+.proposal-metrics strong { color: var(--text-primary); font-size: 15px; font-weight: 500; }
+.agent-design-proposal .warning-copy { margin: 7px 0; }
+.agent-activity-progress { margin: 0 0 14px; padding: 9px 10px; border: 1px solid var(--component-border); }
+.agent-activity-progress p { margin: 7px 0 0; color: var(--text-secondary); font-size: 10px; }
+.ornament-studio-card { display: flex; gap: 10px; align-items: flex-start; }
+.ornament-studio-card p { margin: 4px 0 0; color: var(--text-muted); font-size: 10px; }
+.ornament-preview { height: 154px; display: grid; place-items: center; margin-bottom: 10px; background: #f4ebdd; border: 1px solid var(--component-border); }
+.ornament-preview img { width: 140px; height: 140px; object-fit: contain; }
+.ornament-proposal-card > strong { font-size: 12px; }
+.agent-composer { flex: none; padding: 10px; border-top: 1px solid var(--component-border); background: var(--surface-raised); }
+.composer-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin-bottom: 8px; padding: 3px; background: var(--component-field); }
+.composer-mode button { min-height: 29px; display: flex; align-items: center; justify-content: center; gap: 5px; border: 0; background: transparent; color: var(--text-muted); font-size: 10px; }
+.composer-mode button.active { background: var(--surface-raised); color: var(--text-primary); }
+.agent-composer textarea { width: 100%; resize: none; padding: 9px; border: 1px solid var(--component-border); background: var(--component-field); color: var(--text-primary); font-size: 11px; line-height: 1.5; outline: none; }
+.agent-composer textarea:focus { border-color: var(--action-primary); }
+.composer-actions { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
+.composer-actions select { min-width: 0; height: 29px; padding: 0 5px; border: 1px solid var(--component-border); background: var(--component-field); color: var(--text-muted); font-size: 9px; }
+.composer-shortcut { margin-left: auto; color: var(--text-muted); font: 9px/1 "Fira Code", monospace; }
+.send-button { width: 30px; height: 30px; display: grid; place-items: center; border: 0; background: var(--action-primary); color: white; }
+.send-button:disabled { opacity: .35; }
+.icon-button.stop { color: var(--status-error); }
+.composer-attachments { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
+.composer-attachments > span { max-width: 100%; display: flex; align-items: center; gap: 4px; padding: 4px 5px; border: 1px solid var(--component-border); color: var(--text-secondary); font-size: 9px; overflow: hidden; text-overflow: ellipsis; }
+.composer-attachments button { display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: var(--text-muted); }
+
+/* PhotoCraft fork owns the entire interactive canvas. */
+.photocraft-native-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: #262626; }
+.photocraft-native-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #262626; }
+.photocraft-native-loading { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: #262626; color: #c5c5c5; font-size: 12px; pointer-events: none; }
+.photocraft-native-loading small { max-width: 360px; color: #929292; text-align: center; line-height: 1.5; }
+.photocraft-native-loading.error { pointer-events: auto; }
+.native-canvas-badge { display: inline-flex; align-items: center; gap: 5px; color: var(--status-success); }
+.native-canvas-badge.dirty { color: var(--action-primary-hover); }
+.native-sync-pending { flex: none; padding: 3px 6px; border: 1px solid var(--action-primary); background: transparent; color: var(--action-primary-hover); font-size: 9px; white-space: nowrap; }

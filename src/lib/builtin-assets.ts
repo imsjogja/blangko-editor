@@ -35,6 +35,10 @@ export type AssetUrlMap = Record<string, string>;
 export function resolveAssetUrls(assets: ProjectAsset[], uploadedUrls: AssetUrlMap): AssetUrlMap {
   return Object.fromEntries(assets.map((asset) => [
     asset.id,
-    asset.source === "builtin" ? getBuiltinAssetUrl(asset.builtinId || "botanical-outside") : uploadedUrls[asset.id] || "",
+    asset.source === "builtin"
+      ? getBuiltinAssetUrl(asset.builtinId || "botanical-outside")
+      : asset.source === "generated" && asset.generatedSvg
+        ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(asset.generatedSvg)}`
+        : uploadedUrls[asset.id] || "",
   ]));
 }

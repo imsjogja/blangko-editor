@@ -74,9 +74,12 @@ export const projectAssetSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1).max(255),
   kind: z.enum(["blangko", "photo", "ornament", "map"]),
-  source: z.enum(["builtin", "storage"]),
+  source: z.enum(["builtin", "storage", "generated"]),
   builtinId: z.string().optional(),
   storageKey: z.string().optional(),
+  // Agent-compiled vector artwork lives in the project document, never as an
+  // uploaded user file or an executable HTML fragment.
+  generatedSvg: z.string().max(120_000).optional(),
   contentType: z.string().optional(),
   width: z.number().int().positive().optional(),
   height: z.number().int().positive().optional(),

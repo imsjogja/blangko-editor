@@ -18,6 +18,9 @@ export interface PhotoCraftRuntimeSnapshot {
   inspect: unknown;
   runtime: string;
   editableLayers: true;
+  fileBase64?: string;
+  fileName?: string;
+  manifest?: unknown;
 }
 
 export async function getPhotoCraftStatus(): Promise<PhotoCraftRuntimeStatus> {

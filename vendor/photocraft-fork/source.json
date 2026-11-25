@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/storytold/photocraft",
+  "upstreamCommit": "e56522780f4e00722703775862dd3fca8bd30a78",
+  "upstreamVersion": "0.23.1",
+  "bridgeProtocol": 1,
+  "channel": "blangko-photocraft",
+  "overlay": "apps/photocraft-web",
+  "output": "public/photocraft"
+}

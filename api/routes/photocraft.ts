@@ -32,5 +32,5 @@ async function runtimeResponse(c: Context, includeDocument: boolean) {
 }
 
 const runtimeBodyLimit = bodyLimit({ maxSize: 100 * 1024 * 1024, onError: (c) => c.body(null, 413) });
-photoCraftRoutes.post("/sync", runtimeBodyLimit, async (c) => runtimeResponse(c, false));
+photoCraftRoutes.post("/sync", runtimeBodyLimit, async (c) => runtimeResponse(c, true));
 photoCraftRoutes.post("/handoff", runtimeBodyLimit, async (c) => runtimeResponse(c, true));

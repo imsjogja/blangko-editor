@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { BookOpen, Check, Cloud, CloudOff, Download, LoaderCircle, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Redo2, Save, Undo2 } from "lucide-react";
 import { toast, Toaster } from "sonner";
-import type { BaseEvent } from "@ag-ui/core";
+import type { ContentPart, Message, TextPart } from "@ag-ui/core";
+import { HttpAgent } from "@ag-ui/client";
 import {
   applyDesignProposal,
   createInitialDocument,
@@ -11,7 +12,6 @@ import {
   runPreflight,
   type DesignNode,
   type DesignProposal,
-  type DesignStyle,
   type InvitationDocument,
   type ProjectAsset,
   type SideId,
@@ -19,6 +19,8 @@ import {
 import { trpc } from "@/providers/trpc";
 import { CanvasEditor } from "@/components/editor/CanvasEditor";
 import { LeftPanel, type AgentProgress } from "@/components/editor/LeftPanel";
+import type { AgentSendInput } from "@/components/editor/AgentChat";
+import type { OrnamentProposal } from "@contracts/agent";
 import { Inspector } from "@/components/editor/Inspector";
 import { ExportDialog, type ExportOptions } from "@/components/editor/ExportDialog";
 import { exportMaster, exportPng, exportPrintPdf } from "@/lib/export";
@@ -29,7 +31,6 @@ import { exportPhotoCraftHandoff } from "@/lib/photocraft-runtime";
 import { applyBlangkoAnalysis, removeAssetFromDocument } from "@contracts/smart-canvas";
 
 type SaveStatus = "saved" | "dirty" | "saving" | "error";
-type DomainEvent = BaseEvent & { name?: string; value?: unknown; message?: string };
 
 export default function Home() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -54,6 +55,11 @@ export default function Home() {
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentProgress, setAgentProgress] = useState<AgentProgress[]>([]);
   const [proposal, setProposal] = useState<DesignProposal | null>(null);
+  const [agentMessages, setAgentMessages] = useState<Message[]>([]);
+  const [agentError, setAgentError] = useState<string | null>(null);
+  const agentRef = useRef<HttpAgent | null>(null);
+  const welcomeRequested = useRef(false);
+  if (!agentRef.current) agentRef.current = new HttpAgent({ url: "/api/agent/run" });
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [mobileLeft, setMobileLeft] = useState(false);
@@ -228,8 +234,8 @@ export default function Home() {
     setSelectedNodeId(id);
   };
 
-  const handleUpload = async (file: File, kind: ProjectAsset["kind"]) => {
-    if (!projectId) return;
+  const handleUpload = async (file: File, kind: ProjectAsset["kind"]): Promise<{ asset: ProjectAsset; url: string } | null> => {
+    if (!projectId) return null;
     setUploading(true);
     if (kind === "blangko") setAnalyzing(true);
     try {
@@ -254,8 +260,10 @@ export default function Home() {
       toast.success(kind === "blangko" && analysis
         ? `${file.name} dianalisis: ${analysis.widthMm} × ${analysis.heightMm} mm, ${analysis.folds.length} panduan lipat.`
         : `${file.name} berhasil disimpan.`);
+      return { asset, url: result.url };
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Aset gagal diunggah.");
+      return null;
     } finally {
       setUploading(false);
       setAnalyzing(false);
@@ -320,67 +328,105 @@ export default function Home() {
     toast.success(`${asset.name} dihapus dari proyek. Undo tersedia.`);
   };
 
-  const generateDesign = async (style: DesignStyle, prompt: string) => {
+  const executeAgent = async (input: AgentSendInput | { intent: "welcome" }) => {
+    const agent = agentRef.current;
+    if (!agent || agentRunning) return;
     setAgentRunning(true);
     setAgentProgress([]);
+    setAgentError(null);
     setProposal(null);
-    const threadId = crypto.randomUUID();
-    const runId = crypto.randomUUID();
+    let runError = "";
     try {
-      const response = await fetch("/api/agent/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-        body: JSON.stringify({
-          threadId,
-          runId,
-          messages: [{ id: crypto.randomUUID(), role: "user", content: prompt }],
+      const intent = input.intent;
+      let prompt = "";
+      let style = documentRef.current.design.style;
+      let presetId: string | undefined;
+      if (intent !== "welcome") {
+        const attachments: ContentPart[] = [];
+        for (const file of input.files) {
+          const uploaded = await handleUpload(file, input.attachmentKind);
+          if (!uploaded) throw new Error(`Lampiran ${file.name} belum dapat dikirim ke agen.`);
+          attachments.push({
+            type: "image",
+            source: { type: "url", value: new URL(uploaded.url, window.location.origin).toString(), mimeType: uploaded.asset.contentType },
+            metadata: { assetId: uploaded.asset.id, name: uploaded.asset.name, kind: uploaded.asset.kind },
+          });
+        }
+        prompt = input.prompt;
+        style = input.style ?? style;
+        presetId = input.presetId;
+        const content = attachments.length
+          ? [{ type: "text", text: prompt || `Gunakan ${attachments.length} lampiran pada proyek.` } as TextPart, ...attachments]
+          : prompt;
+        agent.addMessage({ id: crypto.randomUUID(), role: "user", content });
+      }
+      await agent.runAgent(
+        {
+          runId: crypto.randomUUID(),
           tools: [],
           context: [],
-          state: {},
-          forwardedProps: { document: documentRef.current, request: { sideId, style, prompt } },
-        }),
-      });
-      if (!response.ok || !response.body) throw new Error(`Endpoint agen mengembalikan HTTP ${response.status}.`);
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let runError = "";
-      const consume = (block: string) => {
-        const data = block.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
-        if (!data) return;
-        const event = JSON.parse(data) as DomainEvent;
-        if (event.type === "CUSTOM" && event.name === "blangko.agent.progress") {
-          const progress = event.value as AgentProgress;
-          setAgentProgress((items) => [...items, progress]);
-        }
-        if (event.type === "CUSTOM" && event.name === "blangko.design.proposal") setProposal(event.value as DesignProposal);
-        if (event.type === "RUN_ERROR") runError = event.message || "Agen gagal dijalankan.";
-      };
-      while (true) {
-        const { done, value } = await reader.read();
-        buffer += decoder.decode(value, { stream: !done });
-        const blocks = buffer.split("\n\n");
-        buffer = blocks.pop() || "";
-        blocks.forEach(consume);
-        if (done) { if (buffer.trim()) consume(buffer); break; }
-      }
+          forwardedProps: {
+            document: documentRef.current,
+            request: { sideId, style, prompt, intent, presetId },
+          },
+        },
+        {
+          onMessagesChanged: ({ messages }) => setAgentMessages([...messages]),
+          onCustomEvent: ({ event }) => {
+            if (event.name === "blangko.agent.progress") {
+              const progress = event.value as AgentProgress;
+              setAgentProgress((items) => [...items, progress]);
+            }
+            if (event.name === "blangko.design.proposal") setProposal(event.value as DesignProposal);
+          },
+          onRunErrorEvent: ({ event }) => { runError = event.message; },
+        },
+      );
       if (runError) throw new Error(runError);
-      toast.success("Proposal diterima melalui AG-UI.");
+      if (intent !== "welcome") toast.success(intent === "ornament" ? "Proposal ornamen diterima melalui AG-UI." : "Proposal desain diterima melalui AG-UI.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Agen gagal dijalankan.");
+      if (!(error instanceof Error && error.name === "AbortError")) {
+        const message = error instanceof Error ? error.message : "Agen gagal dijalankan.";
+        setAgentError(message);
+        toast.error(message);
+      }
     } finally {
+      setAgentMessages([...agent.messages]);
       setAgentRunning(false);
     }
   };
 
-  const applyProposal = () => {
-    if (!proposal) return;
+  const welcomeAgent = () => {
+    if (welcomeRequested.current) return;
+    welcomeRequested.current = true;
+    void executeAgent({ intent: "welcome" });
+  };
+
+  const applyProposal = (nextProposal: DesignProposal) => {
     const current = documentRef.current;
-    changeDocument(applyDesignProposal(current, proposal));
-    setSideId(proposal.sideId);
+    changeDocument(applyDesignProposal(current, nextProposal));
+    setSideId(nextProposal.sideId);
     setSelectedNodeId(null);
     setProposal(null);
     toast.success("Proposal diterapkan sebagai satu revisi. Undo tersedia.");
+  };
+
+  const applyOrnament = (ornament: OrnamentProposal) => {
+    const current = documentRef.current;
+    if (current.assets.some((asset) => asset.id === ornament.asset.id)) {
+      toast.info("Ornamen ini sudah ada di proyek.");
+      return;
+    }
+    changeDocument({
+      ...current,
+      assets: [...current.assets, ornament.asset],
+      sides: current.sides.map((side) => side.id === ornament.sideId
+        ? { ...side, nodes: [...side.nodes, ornament.node] }
+        : side),
+    });
+    setSideId(ornament.sideId);
+    setSelectedNodeId(ornament.node.id);
+    toast.success("Ornamen vektor disisipkan sebagai satu revisi. Undo tersedia.");
   };
 
   const handleExport = async (options: ExportOptions) => {
@@ -488,7 +534,7 @@ export default function Home() {
       <div className={`editor-grid ${desktopLeft ? "" : "hide-left"} ${desktopRight ? "" : "hide-right"}`}>
         <div id="left-panel" className={`mobile-panel-wrap ${desktopLeft ? "" : "desktop-hidden"} ${mobileLeft ? "open" : ""}`}>
           <button type="button" className="mobile-close" onClick={() => setMobileLeft(false)}>Tutup panel</button>
-          <LeftPanel document={document} sideId={sideId} assets={resolvedAssets} uploading={uploading} analyzing={analyzing} agentRunning={agentRunning} agentProgress={agentProgress} proposal={proposal} onChange={changeDocument} onUpload={(file, kind) => void handleUpload(file, kind)} onInsertAsset={insertAsset} onUseBlangko={useBlangko} onAnalyzeBlangko={(asset) => void analyzeExistingBlangko(asset)} onRemoveAsset={removeAsset} onGenerate={(style, prompt) => void generateDesign(style, prompt)} onApplyProposal={applyProposal} onDismissProposal={() => setProposal(null)} />
+          <LeftPanel document={document} sideId={sideId} assets={resolvedAssets} uploading={uploading} analyzing={analyzing} agentRunning={agentRunning} agentProgress={agentProgress} agentMessages={agentMessages} agentError={agentError} proposal={proposal} onChange={changeDocument} onUpload={(file, kind) => void handleUpload(file, kind)} onInsertAsset={insertAsset} onUseBlangko={useBlangko} onAnalyzeBlangko={(asset) => void analyzeExistingBlangko(asset)} onRemoveAsset={removeAsset} onGenerate={(input) => void executeAgent(input)} onAgentWelcome={welcomeAgent} onCancelAgent={() => agentRef.current?.abortRun()} onApplyProposal={applyProposal} onApplyOrnament={applyOrnament} onDismissProposal={() => setProposal(null)} />
         </div>
         <CanvasEditor document={document} sideId={sideId} assets={resolvedAssets} selectedNodeId={selectedNodeId} showBlangko={showBlangko} showGuides={showGuides} zoom={zoom} onSideChange={setSideId} onSelectNode={setSelectedNodeId} onUpdateNode={updateNode} onToggleBlangko={() => setShowBlangko((value) => !value)} onToggleGuides={() => setShowGuides((value) => !value)} onZoomChange={setZoom} />
         <div id="right-panel" className={`mobile-panel-wrap right ${desktopRight ? "" : "desktop-hidden"} ${mobileRight ? "open" : ""}`}>

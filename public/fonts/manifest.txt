@@ -1,0 +1,6 @@
+Inter | Regular | fonts/Inter-Regular.ttf
+Inter | Medium | fonts/Inter-Medium.ttf
+Inter | SemiBold | fonts/Inter-SemiBold.ttf
+Noto Serif | Regular | fonts/NotoSerif-Regular.ttf
+Noto Serif | Italic | fonts/NotoSerif-Italic.ttf
+Great Vibes | Regular | fonts/GreatVibes-Regular.ttf

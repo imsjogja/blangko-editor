@@ -153,19 +153,25 @@ impl HostBridge {
         }
     }
 
-    pub fn after_frame(&mut self, app: &PhotocraftApp, revision: &mut Option<(photocraft_doc::DocId, u64)>) {
-        let current = app.session.active().map(|state| (state.doc.id, state.revision));
+    pub fn after_frame(
+        &mut self,
+        app: &PhotocraftApp,
+        revision: &mut Option<(photocraft_doc::DocId, u64, Vec<photocraft_doc::LayerId>)>,
+    ) {
+        let current = app.session.active().map(|state| {
+            (state.doc.id, state.revision, state.selected_layers().to_vec())
+        });
         if current == *revision {
             return;
         }
-        *revision = current;
-        let Some((document, active_revision)) = current else {
+        *revision = current.clone();
+        let Some((document, active_revision, selection)) = current else {
             emit(json!({"type": "revision", "document": Value::Null}));
             return;
         };
         let Some(document_state) = app.session.active() else { return };
-        let selected = document_state.selected_layers().iter().filter_map(|layer| {
-            let layer = document_state.doc.layer(*layer)?;
+        let selected = selection.iter().filter_map(|id| {
+            let layer = document_state.doc.layer(*id)?;
             Some(json!({"id": layer.id, "name": layer.name}))
         }).collect::<Vec<_>>();
         emit(json!({

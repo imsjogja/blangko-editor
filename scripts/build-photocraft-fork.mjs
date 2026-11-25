@@ -55,7 +55,7 @@ async function downloadSource() {
 }
 
 if (!process.env.PHOTOCRAFT_SOURCE) await downloadSource();
-for (const directory of ["apps/photocraft-web"]) {
+for (const directory of ["apps/photocraft-web", "crates/ui-egui"]) {
   copyDirectory(
     path.join(appRoot, "vendor/photocraft-fork", directory),
     path.join(source, directory),

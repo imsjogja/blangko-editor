@@ -370,7 +370,7 @@ async fn fetch_bytes(url: &str, integrity: Option<&str>) -> Result<Vec<u8>, Stri
 struct WebShell {
     app: Box<PhotocraftApp>,
     host_bridge: crate::host_bridge::HostBridge,
-    host_revision: Option<(photocraft_doc::DocId, u64)>,
+    host_revision: Option<(photocraft_doc::DocId, u64, Vec<photocraft_doc::LayerId>)>,
     /// Dropped files to open as documents.
     inbox: Inbox,
     /// Dropped files to place on the active document's canvas.

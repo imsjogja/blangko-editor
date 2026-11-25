@@ -74,15 +74,19 @@ async page => {
   ), undefined, { timeout: 30000 });
   await page.waitForTimeout(600);
 
-  const selectedName = await page.evaluate(() => {
+  const selection = await page.evaluate(() => {
     const events = window.__nativeQaEvents.filter(event => event.type === 'revision');
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const selected = events[index].selected?.find(layer => layer.name.startsWith('blangko-node:'));
-      if (selected) return selected.name;
+      if (selected) return { selectedName: selected.name, pixelRevision: events[index].pixelRevision };
     }
     return null;
   });
-  if (!selectedName) throw new Error('Seleksi native tidak ditemukan');
+  if (!selection?.selectedName) throw new Error('Seleksi native tidak ditemukan');
+  const { selectedName, pixelRevision: pixelRevisionBefore } = selection;
+  if (pixelRevisionBefore === undefined || pixelRevisionBefore === null) {
+    throw new Error('pixelRevision awal tidak ditemukan');
+  }
   const selectionStatus = await page.locator('.native-canvas-badge').textContent();
   if (selectionStatus?.includes('belum diekspor')) throw new Error('Seleksi salah menandai dokumen dirty');
 
@@ -93,6 +97,18 @@ async page => {
     });
   }, selectedName);
   await page.waitForFunction(() => document.querySelector('.native-canvas-badge')?.textContent?.includes('belum diekspor'), undefined, { timeout: 30000 });
+  await page.waitForFunction(({ selected, before }) => window.__nativeQaEvents.some(event =>
+    event.type === 'revision' &&
+    event.selected?.some(layer => layer.name === selected) &&
+    event.pixelRevision !== before
+  ), { selected: selectedName, before: pixelRevisionBefore }, { timeout: 30000 });
+  const pixelRevisionAfter = await page.evaluate(selected => {
+    const events = window.__nativeQaEvents.filter(event =>
+      event.type === 'revision' && event.selected?.some(layer => layer.name === selected)
+    );
+    return events.at(-1)?.pixelRevision;
+  }, selectedName);
+  if (pixelRevisionAfter === pixelRevisionBefore) throw new Error('Opacity tidak mengubah pixelRevision');
   const dirtyStatus = await page.locator('.native-canvas-badge').textContent();
 
   await page.getByRole('button', { name: 'Blangko', exact: true }).click();
@@ -121,6 +137,8 @@ async page => {
     selectedName,
     selectionStatus,
     dirtyStatus,
+    pixelRevisionBefore,
+    pixelRevisionAfter,
     pcraftName: pcraft.suggestedFilename(),
     pngName: png.suggestedFilename(),
     pendingCleared: await pendingButton.count() === 0,

@@ -10,15 +10,7 @@ async page => {
   page.on('pageerror', error => pageErrors.push(error.message));
   page.on('dialog', dialog => dialog.accept());
 
-  await page.reload();
-  const exportButton = page.getByRole('button', { name: '.pcraft', exact: true });
-  await exportButton.waitFor({ state: 'visible', timeout: 180000 });
-  await page.waitForFunction(() => {
-    const button = [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === '.pcraft');
-    return button && !button.disabled && !document.querySelector('.photocraft-native-loading');
-  }, undefined, { timeout: 180000 });
-
-  await page.evaluate(() => {
+  await page.addInitScript(() => {
     window.__nativeQaEvents = [];
     window.addEventListener('message', event => {
       if (event.origin !== window.location.origin) return;
@@ -64,8 +56,21 @@ async page => {
     });
   });
 
-  await page.getByRole('tab', { name: /Layer/ }).click();
-  const firstLayer = page.locator('.layer-select').first();
+  await page.reload();
+  const frame = page.frameLocator('iframe[data-testid="photocraft-native-canvas"]');
+  const exportButton = frame.getByRole('button', { name: '.pcraft', exact: true });
+  await exportButton.waitFor({ state: 'visible', timeout: 180000 });
+  await frame.locator('body').waitFor({ state: 'attached', timeout: 180000 });
+  await page.waitForFunction(() => {
+    const frameEl = document.querySelector('iframe[data-testid="photocraft-native-canvas"]');
+    const doc = frameEl?.contentDocument;
+    if (!doc) return false;
+    const button = [...doc.querySelectorAll('button')].find(item => item.textContent?.trim() === '.pcraft');
+    return button && !button.disabled;
+  }, undefined, { timeout: 180000 });
+
+  await frame.getByRole('tab', { name: /Layer/ }).click();
+  const firstLayer = frame.locator('.layer-select').first();
   await firstLayer.waitFor({ state: 'visible' });
   const layerLabel = (await firstLayer.textContent())?.trim();
   await firstLayer.click();
@@ -122,15 +127,21 @@ async page => {
   await page.waitForFunction(() => !document.querySelector('.native-canvas-badge')?.textContent?.includes('belum diekspor'), undefined, { timeout: 30000 });
 
   const pngDownload = page.waitForEvent('download', { timeout: 120000 });
-  await page.getByRole('button', { name: 'PNG', exact: true }).click();
+  await frame.getByRole('button', { name: 'PNG', exact: true }).click();
   const png = await pngDownload;
   await png.saveAs(`${outputDir}/native-qa.png`);
 
   await pendingButton.click();
   await page.waitForFunction(() => {
-    const button = [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === '.pcraft');
-    return button && !button.disabled && !document.querySelector('.photocraft-native-loading');
+    const frameEl = document.querySelector('iframe[data-testid="photocraft-native-canvas"]');
+    const doc = frameEl?.contentDocument;
+    if (!doc) return false;
+    const button = [...doc.querySelectorAll('button')].find(item => item.textContent?.trim() === '.pcraft');
+    return button && !button.disabled;
   }, undefined, { timeout: 180000 });
+  await page.waitForFunction(() =>
+    document.querySelector('.native-canvas-badge')?.textContent?.includes('Native canvas · tersinkron'),
+  undefined, { timeout: 180000 });
 
   return {
     layerLabel,

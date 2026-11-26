@@ -16,6 +16,9 @@ enum HostRequest {
     Open { id: String, name: String, bytes: Vec<u8> },
     Command { id: String, method: String, params: Value },
     Export { id: String, format: String },
+    Inspect { id: String, document: Option<u64> },
+    Activate { id: String, document: u64 },
+    Close { id: String, document: u64 },
 }
 
 #[derive(Clone, Default)]
@@ -30,6 +33,10 @@ fn property(value: &JsValue, key: &str) -> Option<JsValue> {
 
 fn text(value: &JsValue, key: &str) -> Option<String> {
     property(value, key)?.as_string()
+}
+
+fn number(value: &JsValue, key: &str) -> Option<u64> {
+    property(value, key)?.as_f64().map(|number| number as u64)
 }
 
 fn host_event(detail: &JsValue) -> Result<CustomEvent, JsValue> {
@@ -77,6 +84,15 @@ impl HostBridge {
                     let format = text(&detail, "format").unwrap_or_else(|| "pcraft".into());
                     HostRequest::Export { id, format }
                 }
+                "inspect" => HostRequest::Inspect { id, document: number(&detail, "document") },
+                "activate" => {
+                    let Some(document) = number(&detail, "document") else { return };
+                    HostRequest::Activate { id, document }
+                }
+                "close" => {
+                    let Some(document) = number(&detail, "document") else { return };
+                    HostRequest::Close { id, document }
+                }
                 _ => return,
             };
             queue.lock().unwrap_or_else(PoisonError::into_inner).push(request);
@@ -92,9 +108,13 @@ impl HostBridge {
             match request {
                 HostRequest::Open { id, name, bytes } => {
                     ctx.request_repaint();
-                    let closed = app.session.execute("file.closeAll", json!({"save": false}));
-                    let result = closed.map_err(|error| error.to_string()).and_then(|_| {
-                        app.open_automation_bytes(&name, &bytes).map(|warnings| json!({"warnings": warnings}))
+                    // Multi-dokumen (protokol 3): open menambah tab native baru yang langsung
+                    // aktif; dokumen sisi lain tetap hidup sehingga edit native tidak hilang
+                    // saat berpindah sisi. Sisi yang kontennya berubah dibuka sebagai tab baru
+                    // dan tab lamanya ditutup lewat request `close` oleh host.
+                    let result = app.open_automation_bytes(&name, &bytes).map(|warnings| {
+                        let document = app.session.active().map(|state| state.doc.id.0);
+                        json!({"warnings": warnings, "document": document})
                     });
                     match result {
                         Ok(payload) => reply(id, true, payload),
@@ -144,12 +164,65 @@ impl HostBridge {
                         Err(error) => reply(id, false, json!({"message": error})),
                     }
                 }
+                HostRequest::Inspect { id, document } => {
+                    // The same per-layer document JSON the CLI's `doc.inspect` serves
+                    // (`photocraft_engine::inspect::document`), so write-back can map
+                    // native edits onto canonical nodes. `document` targets a specific
+                    // tab (multi-dokumen); tanpa itu, dokumen aktif yang dibaca.
+                    let result = match document {
+                        Some(doc_id) => app
+                            .session
+                            .tracked(photocraft_doc::DocId(doc_id))
+                            .map(|state| photocraft_engine::inspect::document(&**state)),
+                        None => app
+                            .session
+                            .active()
+                            .map(|state| photocraft_engine::inspect::document(state)),
+                    }
+                    .ok_or_else(|| "Tidak ada dokumen PhotoCraft aktif.".to_string());
+                    match result {
+                        Ok(payload) => reply(id, true, payload),
+                        Err(error) => reply(id, false, json!({"message": error})),
+                    }
+                }
+                HostRequest::Activate { id, document } => {
+                    let target = app.session.documents().iter().position(|state| state.doc.id.0 == document);
+                    let result = match target {
+                        Some(index) => {
+                            app.session.set_active(index);
+                            app.sync_views();
+                            ctx.request_repaint();
+                            Ok(json!({"document": document}))
+                        }
+                        None => Err(format!("Dokumen native {document} tidak ditemukan.")),
+                    };
+                    match result {
+                        Ok(payload) => reply(id, true, payload),
+                        Err(error) => reply(id, false, json!({"message": error})),
+                    }
+                }
+                HostRequest::Close { id, document } => {
+                    let target = app.session.documents().iter().position(|state| state.doc.id.0 == document);
+                    let result = match target {
+                        Some(index) => {
+                            app.session.close(index);
+                            app.sync_views();
+                            ctx.request_repaint();
+                            Ok(json!({"closed": document}))
+                        }
+                        None => Err(format!("Dokumen native {document} tidak ditemukan.")),
+                    };
+                    match result {
+                        Ok(payload) => reply(id, true, payload),
+                        Err(error) => reply(id, false, json!({"message": error})),
+                    }
+                }
             }
         }
         let mut started = self.started.lock().unwrap_or_else(PoisonError::into_inner);
         if !*started {
             *started = true;
-            emit(json!({"type": "ready", "engine": "photocraft-fork", "protocol": 1}));
+            emit(json!({"type": "ready", "engine": "photocraft-fork", "protocol": 3}));
         }
     }
 

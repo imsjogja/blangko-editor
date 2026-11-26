@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
-import { BookOpen, Check, Cloud, CloudOff, Download, LoaderCircle, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Redo2, Save, Undo2 } from "lucide-react";
+import { BookOpen, Check, Cloud, CloudOff, Download, LoaderCircle, PanelLeftClose, PanelLeftOpen, Save } from "lucide-react";
 import { toast, Toaster } from "sonner";
 import type { ContentPart, Message, TextPart } from "@ag-ui/core";
 import { HttpAgent } from "@ag-ui/client";
@@ -21,7 +21,6 @@ import { CanvasEditor } from "@/components/editor/CanvasEditor";
 import { LeftPanel, type AgentProgress } from "@/components/editor/LeftPanel";
 import type { AgentSendInput } from "@/components/editor/AgentChat";
 import type { OrnamentProposal } from "@contracts/agent";
-import { Inspector } from "@/components/editor/Inspector";
 import { ExportDialog, type ExportOptions } from "@/components/editor/ExportDialog";
 import { exportMaster, exportPng, exportPrintPdf } from "@/lib/export";
 import { resolveAssetUrls, type AssetUrlMap } from "@/lib/builtin-assets";
@@ -35,19 +34,18 @@ type SaveStatus = "saved" | "dirty" | "saving" | "error";
 export default function Home() {
   const [searchParams, setSearchParams] = useSearchParams();
   const projectId = searchParams.get("project");
-  const initialDocument = useRef(createInitialDocument());
-  const [document, setDocument] = useState<InvitationDocument>(initialDocument.current);
+  const [initialDocument] = useState(() => createInitialDocument());
+  const [document, setDocument] = useState<InvitationDocument>(initialDocument);
   const documentRef = useRef(document);
   const revisionRef = useRef(1);
   const [projectReady, setProjectReady] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
+  const [revision, setRevision] = useState(1);
   const [assetUrls, setAssetUrls] = useState<AssetUrlMap>({});
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
   const [sideId, setSideId] = useState<SideId>("outside");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [showBlangko, setShowBlangko] = useState(true);
-  const [showGuides, setShowGuides] = useState(true);
-  const [zoom, setZoom] = useState(1);
   const [past, setPast] = useState<InvitationDocument[]>([]);
   const [future, setFuture] = useState<InvitationDocument[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -59,13 +57,13 @@ export default function Home() {
   const [agentError, setAgentError] = useState<string | null>(null);
   const agentRef = useRef<HttpAgent | null>(null);
   const welcomeRequested = useRef(false);
-  if (!agentRef.current) agentRef.current = new HttpAgent({ url: "/api/agent/run" });
+  if (agentRef.current == null) {
+    agentRef.current = new HttpAgent({ url: "/api/agent/run" });
+  }
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [mobileLeft, setMobileLeft] = useState(false);
-  const [mobileRight, setMobileRight] = useState(false);
   const [desktopLeft, setDesktopLeft] = useState(true);
-  const [desktopRight, setDesktopRight] = useState(true);
   const [isMobile, setIsMobile] = useState(() => window.matchMedia("(max-width: 940px)").matches);
   const createStarted = useRef(false);
 
@@ -85,7 +83,6 @@ export default function Home() {
       setIsMobile(media.matches);
       if (!media.matches) {
         setMobileLeft(false);
-        setMobileRight(false);
       }
     };
     media.addEventListener("change", update);
@@ -96,27 +93,31 @@ export default function Home() {
     if (!projectId && !createStarted.current) {
       createStarted.current = true;
       setInitError(null);
-      createProject.mutateAsync({ document: initialDocument.current })
+      createProject.mutateAsync({ document: initialDocument })
         .then(({ project }) => {
           revisionRef.current = project.revision;
-          setDocument(initialDocument.current);
+          setRevision(project.revision);
+          setDocument(initialDocument);
           setProjectReady(true);
           setSearchParams({ project: project.id }, { replace: true });
         })
         .catch((error) => setInitError(error instanceof Error ? error.message : "Proyek gagal dibuat."));
     }
-  }, [projectId, createProject, setSearchParams]);
+  }, [projectId, createProject, setSearchParams, initialDocument]);
 
   useEffect(() => {
     if (!projectQuery.data) return;
     const parsed = invitationDocumentSchema.safeParse(projectQuery.data.project.document);
     if (!parsed.success) {
+      // Sinkronisasi status error dari hasil React Query; aman karena hanya berjalan saat data berubah.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setInitError("Skema dokumen pada revisi tersimpan tidak valid.");
       return;
     }
     setDocument(parsed.data);
     documentRef.current = parsed.data;
     revisionRef.current = projectQuery.data.project.revision;
+    setRevision(projectQuery.data.project.revision);
     const uploaded = Object.fromEntries(projectQuery.data.assets.map((asset) => [asset.id, asset.url]));
     setAssetUrls(uploaded);
     setProjectReady(true);
@@ -125,6 +126,8 @@ export default function Home() {
   }, [projectQuery.data]);
 
   useEffect(() => {
+    // Sinkronisasi status error dari React Query ke state lokal tampilan.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (projectQuery.error) setInitError(projectQuery.error.message);
   }, [projectQuery.error]);
 
@@ -145,6 +148,7 @@ export default function Home() {
     try {
       const result = await saveProject.mutateAsync({ projectId, baseRevision, document: snapshot });
       revisionRef.current = result.revision;
+      setRevision(result.revision);
       setSaveStatus(documentRef.current === snapshot ? "saved" : "dirty");
     } catch (error) {
       setSaveStatus("error");
@@ -182,58 +186,6 @@ export default function Home() {
     setSelectedNodeId(null);
   }, [future]);
 
-  const updateNode = useCallback((id: string, patch: Partial<DesignNode>) => {
-    const current = documentRef.current;
-    changeDocument({
-      ...current,
-      sides: current.sides.map((side) => side.id === sideId
-        ? { ...side, nodes: side.nodes.map((node) => node.id === id ? { ...node, ...patch } : node) }
-        : side),
-    });
-  }, [changeDocument, sideId]);
-
-  const deleteNode = useCallback((id: string) => {
-    const current = documentRef.current;
-    changeDocument({ ...current, sides: current.sides.map((side) => side.id === sideId ? { ...side, nodes: side.nodes.filter((node) => node.id !== id) } : side) });
-    setSelectedNodeId(null);
-  }, [changeDocument, sideId]);
-
-  const duplicateNode = (id: string) => {
-    const current = documentRef.current;
-    const side = getSide(current, sideId);
-    const original = side.nodes.find((node) => node.id === id);
-    if (!original) return;
-    const duplicate: DesignNode = { ...original, id: crypto.randomUUID(), box: { ...original.box, x: original.box.x + 4, y: original.box.y + 4 }, zIndex: Math.max(...side.nodes.map((node) => node.zIndex)) + 1 };
-    changeDocument({ ...current, sides: current.sides.map((item) => item.id === sideId ? { ...item, nodes: [...item.nodes, duplicate] } : item) });
-    setSelectedNodeId(duplicate.id);
-  };
-
-  const reorderNode = (id: string, direction: "up" | "down") => {
-    const current = documentRef.current;
-    const side = getSide(current, sideId);
-    const ordered = [...side.nodes].sort((a, b) => a.zIndex - b.zIndex);
-    const index = ordered.findIndex((node) => node.id === id);
-    const other = ordered[index + (direction === "up" ? 1 : -1)];
-    const node = ordered[index];
-    if (!other || !node) return;
-    const nodes = side.nodes.map((item) => item.id === id ? { ...item, zIndex: other.zIndex } : item.id === other.id ? { ...item, zIndex: node.zIndex } : item);
-    changeDocument({ ...current, sides: current.sides.map((item) => item.id === sideId ? { ...item, nodes } : item) });
-  };
-
-  const addNode = (kind: "text" | "shape") => {
-    const current = documentRef.current;
-    const side = getSide(current, sideId);
-    const fold = side.foldLines.find((item) => item.axis === "vertical");
-    const x = sideId === "outside" && fold ? fold.positionMm + 18 : 18;
-    const id = crypto.randomUUID();
-    const nextZ = Math.max(0, ...side.nodes.map((node) => node.zIndex)) + 1;
-    const node: DesignNode = kind === "text"
-      ? { id, kind, role: "CONTENT", box: { x, y: 82, width: 92, height: 18 }, rotation: 0, visible: true, locked: false, opacity: 1, zIndex: nextZ, text: "Teks baru", fontSize: 18, fontFamily: "Arial", fontWeight: 400, textAlign: "left", color: "#51483C" }
-      : { id, kind, role: "CONTENT", box: { x, y: 82, width: 42, height: 12 }, rotation: 0, visible: true, locked: false, opacity: 1, zIndex: nextZ, backgroundColor: "#6E7254" };
-    changeDocument({ ...current, sides: current.sides.map((item) => item.id === sideId ? { ...item, nodes: [...item.nodes, node] } : item) });
-    setSelectedNodeId(id);
-  };
-
   const handleUpload = async (file: File, kind: ProjectAsset["kind"]): Promise<{ asset: ProjectAsset; url: string } | null> => {
     if (!projectId) return null;
     setUploading(true);
@@ -254,7 +206,6 @@ export default function Home() {
       };
       if (kind === "blangko" && analysis) {
         next = applyBlangkoAnalysis(next, sideId, asset.id, analysis);
-        setZoom(1);
       }
       changeDocument(next);
       toast.success(kind === "blangko" && analysis
@@ -287,7 +238,6 @@ export default function Home() {
     const current = documentRef.current;
     if (asset.analysis) {
       changeDocument(applyBlangkoAnalysis(current, sideId, asset.id));
-      setZoom(1);
     } else {
       changeDocument({ ...current, stock: { ...current.stock, physicalSizeConfirmed: false }, sides: current.sides.map((side) => side.id === sideId ? { ...side, blangkoAssetId: asset.id } : side) });
     }
@@ -313,7 +263,6 @@ export default function Home() {
         assets: current.assets.map((item) => item.id === asset.id ? { ...item, analysis } : item),
       };
       changeDocument(applyBlangkoAnalysis(withAnalysis, sideId, asset.id, analysis));
-      setZoom(1);
       toast.success("Smart canvas diperbarui dari analisis blangko.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Blangko gagal dianalisis.");
@@ -341,6 +290,7 @@ export default function Home() {
       let prompt = "";
       let style = documentRef.current.design.style;
       let presetId: string | undefined;
+      let refineAssetId: string | undefined;
       if (intent !== "welcome") {
         const attachments: ContentPart[] = [];
         for (const file of input.files) {
@@ -355,6 +305,7 @@ export default function Home() {
         prompt = input.prompt;
         style = input.style ?? style;
         presetId = input.presetId;
+        refineAssetId = input.assetId;
         const content = attachments.length
           ? [{ type: "text", text: prompt || `Gunakan ${attachments.length} lampiran pada proyek.` } as TextPart, ...attachments]
           : prompt;
@@ -367,7 +318,7 @@ export default function Home() {
           context: [],
           forwardedProps: {
             document: documentRef.current,
-            request: { sideId, style, prompt, intent, presetId },
+            request: { sideId, style, prompt, intent, presetId, assetId: refineAssetId },
           },
         },
         {
@@ -383,7 +334,7 @@ export default function Home() {
         },
       );
       if (runError) throw new Error(runError);
-      if (intent !== "welcome") toast.success(intent === "ornament" ? "Proposal ornamen diterima melalui AG-UI." : "Proposal desain diterima melalui AG-UI.");
+      if (intent !== "welcome") toast.success(intent === "design" ? "Proposal desain diterima melalui AG-UI." : "Proposal ornamen diterima melalui AG-UI.");
     } catch (error) {
       if (!(error instanceof Error && error.name === "AbortError")) {
         const message = error instanceof Error ? error.message : "Agen gagal dijalankan.";
@@ -472,15 +423,13 @@ export default function Home() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void saveNow(); }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !event.shiftKey) { event.preventDefault(); undo(); }
       if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === "y" || (event.key.toLowerCase() === "z" && event.shiftKey))) { event.preventDefault(); redo(); }
-      if (event.key === "Delete" && selectedNodeId) deleteNode(selectedNodeId);
-      if (event.key === "Escape") { setSelectedNodeId(null); setMobileLeft(false); setMobileRight(false); }
+      if (event.key === "Escape") { setSelectedNodeId(null); setMobileLeft(false); }
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
-  }, [deleteNode, redo, saveNow, selectedNodeId, undo]);
+  }, [redo, saveNow, undo]);
 
   const side = getSide(document, sideId);
-  const selectedNode = side.nodes.find((node) => node.id === selectedNodeId) || null;
   const issues = useMemo(() => runPreflight(document, sideId), [document, sideId]);
   const resolvedAssets = useMemo(() => resolveAssetUrls(document.assets, assetUrls), [document.assets, assetUrls]);
 
@@ -506,41 +455,26 @@ export default function Home() {
         >
           {(isMobile ? mobileLeft : desktopLeft) ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
         </button>
-        <div className="document-identity"><strong>{document.title}</strong><span>{side.label} · revisi {revisionRef.current}</span></div>
+        <div className="document-identity"><strong>{document.title}</strong><span>{side.label} · revisi {revision}</span></div>
         <div className="topbar-actions">
           <span className={`save-status ${saveStatus}`}>
             {saveStatus === "saving" ? <LoaderCircle className="spin" size={13} /> : saveStatus === "error" ? <CloudOff size={13} /> : saveStatus === "saved" ? <Cloud size={13} /> : <Check size={13} />}
             {saveStatus === "saved" ? "Tersimpan" : saveStatus === "saving" ? "Menyimpan" : saveStatus === "dirty" ? "Perubahan lokal" : "Gagal simpan"}
           </span>
-          <div className="history-actions"><button type="button" onClick={undo} disabled={!past.length} aria-label="Undo"><Undo2 size={17} /></button><button type="button" onClick={redo} disabled={!future.length} aria-label="Redo"><Redo2 size={17} /></button></div>
           <button type="button" className="secondary-button save-button" onClick={() => void saveNow()} disabled={saveStatus === "saving"}><Save size={15} />Simpan</button>
           <button type="button" className="primary-button export-button" onClick={() => setExportOpen(true)}><Download size={15} />Ekspor</button>
-          <button
-            type="button"
-            className="panel-toggle"
-            onClick={() => isMobile ? setMobileRight((value) => !value) : setDesktopRight((value) => !value)}
-            aria-label={isMobile ? (mobileRight ? "Tutup inspector" : "Buka inspector") : (desktopRight ? "Sembunyikan inspector" : "Tampilkan inspector")}
-            aria-expanded={isMobile ? mobileRight : desktopRight}
-            aria-controls="right-panel"
-          >
-            {(isMobile ? mobileRight : desktopRight) ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
-          </button>
         </div>
       </header>
 
-      {isMobile && (mobileLeft || mobileRight) && (
-        <button type="button" className="panel-backdrop" aria-label="Tutup semua panel" onClick={() => { setMobileLeft(false); setMobileRight(false); }} />
+      {isMobile && mobileLeft && (
+        <button type="button" className="panel-backdrop" aria-label="Tutup panel" onClick={() => setMobileLeft(false)} />
       )}
-      <div className={`editor-grid ${desktopLeft ? "" : "hide-left"} ${desktopRight ? "" : "hide-right"}`}>
+      <div className={`editor-grid ${desktopLeft ? "" : "hide-left"}`}>
         <div id="left-panel" className={`mobile-panel-wrap ${desktopLeft ? "" : "desktop-hidden"} ${mobileLeft ? "open" : ""}`}>
           <button type="button" className="mobile-close" onClick={() => setMobileLeft(false)}>Tutup panel</button>
-          <LeftPanel document={document} sideId={sideId} assets={resolvedAssets} uploading={uploading} analyzing={analyzing} agentRunning={agentRunning} agentProgress={agentProgress} agentMessages={agentMessages} agentError={agentError} proposal={proposal} onChange={changeDocument} onUpload={(file, kind) => void handleUpload(file, kind)} onInsertAsset={insertAsset} onUseBlangko={useBlangko} onAnalyzeBlangko={(asset) => void analyzeExistingBlangko(asset)} onRemoveAsset={removeAsset} onGenerate={(input) => void executeAgent(input)} onAgentWelcome={welcomeAgent} onCancelAgent={() => agentRef.current?.abortRun()} onApplyProposal={applyProposal} onApplyOrnament={applyOrnament} onDismissProposal={() => setProposal(null)} />
+          <LeftPanel document={document} sideId={sideId} assets={resolvedAssets} uploading={uploading} analyzing={analyzing} agentRunning={agentRunning} agentProgress={agentProgress} agentMessages={agentMessages} agentError={agentError} proposal={proposal} issues={issues} onChange={changeDocument} onUpload={(file, kind) => void handleUpload(file, kind)} onInsertAsset={insertAsset} onUseBlangko={useBlangko} onAnalyzeBlangko={(asset) => void analyzeExistingBlangko(asset)} onRemoveAsset={removeAsset} onGenerate={(input) => void executeAgent(input)} onAgentWelcome={welcomeAgent} onCancelAgent={() => agentRef.current?.abortRun()} onApplyProposal={applyProposal} onApplyOrnament={applyOrnament} onDismissProposal={() => setProposal(null)} onSelectNode={setSelectedNodeId} onExport={() => setExportOpen(true)} />
         </div>
-        <CanvasEditor document={document} sideId={sideId} assets={resolvedAssets} selectedNodeId={selectedNodeId} showBlangko={showBlangko} showGuides={showGuides} zoom={zoom} onSideChange={setSideId} onSelectNode={setSelectedNodeId} onUpdateNode={updateNode} onToggleBlangko={() => setShowBlangko((value) => !value)} onToggleGuides={() => setShowGuides((value) => !value)} onZoomChange={setZoom} />
-        <div id="right-panel" className={`mobile-panel-wrap right ${desktopRight ? "" : "desktop-hidden"} ${mobileRight ? "open" : ""}`}>
-          <button type="button" className="mobile-close" onClick={() => setMobileRight(false)}>Tutup inspector</button>
-          <Inspector document={document} sideId={sideId} selectedNode={selectedNode} issues={issues} onUpdateNode={updateNode} onSelectNode={setSelectedNodeId} onDeleteNode={deleteNode} onDuplicateNode={duplicateNode} onReorderNode={reorderNode} onAddNode={addNode} onExport={() => setExportOpen(true)} />
-        </div>
+        <CanvasEditor document={document} sideId={sideId} assets={resolvedAssets} selectedNodeId={selectedNodeId} showBlangko={showBlangko} onSideChange={setSideId} onSelectNode={setSelectedNodeId} onToggleBlangko={() => setShowBlangko((value) => !value)} onWriteBack={changeDocument} />
       </div>
 
       {exportOpen && <ExportDialog document={document} sideId={sideId} issues={issues} exporting={exporting} onClose={() => setExportOpen(false)} onExport={(options) => void handleExport(options)} onPhotoCraft={(includeBlangko) => void handlePhotoCraft(includeBlangko)} onMaster={() => exportMaster(document)} />}

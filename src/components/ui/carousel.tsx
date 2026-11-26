@@ -93,6 +93,8 @@ function Carousel({
 
   React.useEffect(() => {
     if (!api) return
+    // Pola standar shadcn: inisialisasi status scroll dari instance carousel.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     onSelect(api)
     api.on("reInit", onSelect)
     api.on("select", onSelect)

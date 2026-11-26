@@ -39,3 +39,7 @@ build/
 # Test coverage
 coverage/
 .nyc_output/
+
+# Toolchain lokal untuk rebuild WASM PhotoCraft (trunk, wasm-opt)
+.tools/
+.qa-output/

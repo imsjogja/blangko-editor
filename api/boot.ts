@@ -11,6 +11,7 @@ import { REQUEST_ID_HEADER, runWithRequestId } from "./lib/requestcontext";
 import { agentRoutes } from "./routes/agent";
 import { projectAssetRoutes } from "./routes/project-assets";
 import { photoCraftRoutes } from "./routes/photocraft";
+import { vectorCraftRoutes } from "./routes/vectorcraft";
 
 const app = new Hono<{ Bindings: HttpBindings }>();
 
@@ -80,6 +81,7 @@ app.post(
 app.route("/api/agent", agentRoutes);
 app.route("/api/projects", projectAssetRoutes);
 app.route("/api/photocraft", photoCraftRoutes);
+app.route("/api/vectorcraft", vectorCraftRoutes);
 app.all("/api/*", (c) => c.json({ error: "Not Found" }, 404));
 
 // Unhandled request errors must reach /tmp/kimi-logs/app.log, not just stdout:

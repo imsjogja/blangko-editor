@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { env } from "../lib/env";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 
@@ -80,7 +81,8 @@ export class PhotoCraftSession {
   }
 
   private async start(): Promise<void> {
-    this.root = await mkdtemp(path.join(tmpdir(), "blangko-photocraft-session-"));
+    const temporaryDirectory = env.photocraftTmpdir || tmpdir();
+    this.root = await mkdtemp(path.join(temporaryDirectory, "blangko-photocraft-session-"));
     await mkdir(path.join(this.root, "assets"), { recursive: true });
     const fontEnvironment = await prepareFontEnvironment(this.root);
     const launch = await resolvePhotoCraftLaunch(this.binaryPath);
@@ -197,7 +199,7 @@ function bundledFontDirectory(): string | null {
   return candidates.find((candidate) => existsSync(path.join(candidate, "Inter-Regular.ttf"))) ?? null;
 }
 
-async function prepareFontEnvironment(root: string): Promise<Record<string, string>> {
+export async function prepareFontEnvironment(root: string): Promise<Record<string, string>> {
   const fonts = bundledFontDirectory();
   if (!fonts) return {};
   const escapedFonts = fonts.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll("\"", "&quot;");

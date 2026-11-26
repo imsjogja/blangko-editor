@@ -73,7 +73,19 @@ export const designPresets: DesignPreset[] = [
   },
 ];
 
-export const agentIntentSchema = z.enum(["welcome", "design", "ornament"]);
+export const agentIntentSchema = z.enum(["welcome", "design", "ornament", "ornament-refine"]);
+
+export const vectorCraftCommandSchema = z.object({
+  id: z.string().min(1).max(120),
+  params: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const ornamentRefinePlanSchema = z.object({
+  summary: z.string().min(8).max(240),
+  commands: z.array(vectorCraftCommandSchema).min(1).max(8),
+});
+
+export type OrnamentRefinePlan = z.infer<typeof ornamentRefinePlanSchema>;
 
 export const ornamentPathSchema = z.object({
   d: z.string().min(2).max(1200).regex(/^[MmLlCcQqZz0-9\s,+\-.eE]+$/, "Path hanya boleh berisi perintah M, L, C, Q, dan Z."),

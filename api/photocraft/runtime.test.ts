@@ -149,6 +149,19 @@ describe("PhotoCraft runtime protocol", () => {
     ]);
   });
 
+  it("melewati pekerjaan antrean yang sudah dibatalkan browser", async () => {
+    const fake = await createFakeCli();
+    const first = syncPhotoCraftRuntime(runtimeOptions(fake.binaryPath));
+    const controller = new AbortController();
+    const cancelled = syncPhotoCraftRuntime({ ...runtimeOptions(fake.binaryPath), signal: controller.signal });
+    controller.abort();
+
+    await first;
+    await expect(cancelled).rejects.toMatchObject({ name: "AbortError" });
+    const requests = JSON.parse(await readFile(fake.logPath, "utf8")) as Array<{ method: string }>;
+    expect(requests.filter((request) => request.method === "doc.new")).toHaveLength(1);
+  });
+
   it("menutup dokumen ketika batch engine gagal", async () => {
     const fake = await createFakeCli("failure");
     await expect(syncPhotoCraftRuntime(runtimeOptions(fake.binaryPath))).rejects.toThrow("synthetic engine failure");

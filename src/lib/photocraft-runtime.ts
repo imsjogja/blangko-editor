@@ -54,18 +54,50 @@ function bytesBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function referencedRuntimeAssetIds(
+  document: InvitationDocument,
+  sideId: SideId,
+  projection: PrintProjection,
+): string[] {
+  const side = getSide(document, sideId);
+  const ids = new Set(side.nodes.filter((node) => node.visible && node.kind === "image").map((node) => node.assetId));
+  if (projection === "composite" && side.blangkoAssetId) ids.add(side.blangkoAssetId);
+  return [...ids].filter((id): id is string => Boolean(id));
+}
+
+/**
+ * Cheap, stable fingerprint of everything that changes the server render for one
+ * side: the side itself, stock, document title (used as the native document
+ * name), the projection, and the URLs of the referenced assets (asset bytes are
+ * immutable per id; a URL change signals new content). Used to skip renders when
+ * switching back to a side whose content has not changed.
+ */
+export function sideContentKey(
+  document: InvitationDocument,
+  sideId: SideId,
+  assets: AssetUrlMap,
+  includeBlangko: boolean,
+): string {
+  const projection: PrintProjection = includeBlangko ? "composite" : "content-only";
+  const referenced = referencedRuntimeAssetIds(document, sideId, projection);
+  return JSON.stringify({
+    v: 1,
+    side: getSide(document, sideId),
+    stock: document.stock,
+    title: document.title,
+    includeBlangko,
+    assets: referenced.map((id) => [id, assets[id] ?? null]),
+  });
+}
+
 async function collectRuntimeAssets(
   document: InvitationDocument,
   sideId: SideId,
   projection: PrintProjection,
   assets: AssetUrlMap,
 ): Promise<PhotoCraftRuntimeAssets> {
-  const side = getSide(document, sideId);
-  const ids = new Set(side.nodes.filter((node) => node.visible && node.kind === "image").map((node) => node.assetId));
-  if (projection === "composite" && side.blangkoAssetId) ids.add(side.blangkoAssetId);
   const result: PhotoCraftRuntimeAssets = {};
-  await Promise.all([...ids].map(async (assetId) => {
-    if (!assetId) return;
+  await Promise.all(referencedRuntimeAssetIds(document, sideId, projection).map(async (assetId) => {
     const url = assets[assetId];
     if (!url) throw new Error(`URL aset ${assetId} belum tersedia.`);
     const response = await fetch(url);

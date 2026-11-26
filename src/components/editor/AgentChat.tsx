@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ContentPart, Message } from "@ag-ui/core";
-import { Bot, Check, FileImage, LoaderCircle, Paperclip, Send, Sparkles, Square, WandSparkles, X } from "lucide-react";
+import { Bot, Brush, Check, FileImage, LoaderCircle, Paperclip, Send, Sparkles, Square, WandSparkles, X } from "lucide-react";
 import type { DesignProposal, DesignStyle, ProjectAsset } from "@contracts/invitation";
 import {
   designProposalActivitySchema,
@@ -14,15 +14,17 @@ export interface AgentSendInput {
   prompt: string;
   files: File[];
   attachmentKind: ProjectAsset["kind"];
-  intent: "design" | "ornament";
+  intent: "design" | "ornament" | "ornament-refine";
   style?: DesignStyle;
   presetId?: string;
+  assetId?: string;
 }
 
 interface AgentChatProps {
   messages: Message[];
   running: boolean;
   error: string | null;
+  ornaments: Array<{ id: string; name: string }>;
   onWelcome: () => void;
   onSend: (input: AgentSendInput) => void;
   onCancel: () => void;
@@ -122,7 +124,8 @@ function ActivityView({ message, running, onPreset, onApplyDesign, onApplyOrname
 
 export function AgentChat(props: AgentChatProps) {
   const [prompt, setPrompt] = useState("");
-  const [intent, setIntent] = useState<"design" | "ornament">("design");
+  const [intent, setIntent] = useState<"design" | "ornament" | "ornament-refine">("design");
+  const [refineAssetId, setRefineAssetId] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [attachmentKind, setAttachmentKind] = useState<ProjectAsset["kind"]>("photo");
   const fileInput = useRef<HTMLInputElement>(null);
@@ -134,10 +137,19 @@ export function AgentChat(props: AgentChatProps) {
     if (element) element.scrollTop = element.scrollHeight;
   }, [props.messages, props.running]);
 
+  const activeRefineAssetId = props.ornaments.some((item) => item.id === refineAssetId)
+    ? refineAssetId
+    : (props.ornaments[0]?.id ?? "");
+
   const send = () => {
     const value = prompt.trim();
-    if ((!value && !files.length) || props.running) return;
-    props.onSend({ prompt: value, files, attachmentKind, intent });
+    if (intent === "ornament-refine") {
+      if (!value || !activeRefineAssetId || props.running) return;
+      props.onSend({ prompt: value, files: [], attachmentKind, intent, assetId: activeRefineAssetId });
+    } else {
+      if ((!value && !files.length) || props.running) return;
+      props.onSend({ prompt: value, files, attachmentKind, intent });
+    }
     setPrompt("");
     setFiles([]);
   };
@@ -167,13 +179,21 @@ export function AgentChat(props: AgentChatProps) {
         <div className="composer-mode" role="group" aria-label="Mode agen">
           <button type="button" className={intent === "design" ? "active" : ""} onClick={() => setIntent("design")}><Sparkles size={13} />Desain</button>
           <button type="button" className={intent === "ornament" ? "active" : ""} onClick={() => setIntent("ornament")}><WandSparkles size={13} />Ornamen AI</button>
+          <button type="button" className={intent === "ornament-refine" ? "active" : ""} onClick={() => setIntent("ornament-refine")}><Brush size={13} />Refine VC</button>
         </div>
+        {intent === "ornament-refine" && (
+          props.ornaments.length
+            ? <select className="refine-asset-select" value={activeRefineAssetId} onChange={(event) => setRefineAssetId(event.target.value)} aria-label="Ornamen yang di-refine">
+                {props.ornaments.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+            : <small className="refine-asset-empty">Belum ada ornamen SVG hasil generate. Buat dulu lewat mode Ornamen AI.</small>
+        )}
         {files.length > 0 && <div className="composer-attachments">{files.map((file, index) => <span key={`${file.name}-${index}`}><FileImage size={12} />{file.name}<button type="button" onClick={() => setFiles((items) => items.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Lepas ${file.name}`}><X size={11} /></button></span>)}</div>}
         <textarea
           rows={3}
           value={prompt}
           maxLength={2000}
-          placeholder={intent === "ornament" ? "Contoh: eucalyptus tipis, sage, bingkai asimetris…" : "Instruksikan layout atau lampirkan aset untuk dianalisis…"}
+          placeholder={intent === "ornament-refine" ? "Contoh: ubah seluruh warna jadi #2c3e50, lalu rapikan stroke…" : intent === "ornament" ? "Contoh: eucalyptus tipis, sage, bingkai asimetris…" : "Instruksikan layout atau lampirkan aset untuk dianalisis…"}
           onChange={(event) => setPrompt(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); send(); }

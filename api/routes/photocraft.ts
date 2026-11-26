@@ -22,7 +22,7 @@ async function runtimeResponse(c: Context, includeDocument: boolean) {
   const parsed = runtimeSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: "Payload runtime PhotoCraft tidak valid." }, 400);
   try {
-    const result = await syncPhotoCraftRuntime({ ...parsed.data, includeDocument });
+    const result = await syncPhotoCraftRuntime({ ...parsed.data, includeDocument, signal: c.req.raw.signal });
     return c.json(result);
   } catch (error) {
     const status = await probePhotoCraft();

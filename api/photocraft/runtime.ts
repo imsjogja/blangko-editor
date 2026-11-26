@@ -10,6 +10,8 @@ import {
 } from "@contracts/photocraft";
 import { getSide, type InvitationDocument, type SideId } from "@contracts/invitation";
 import { getPhotoCraftSession, resolvePhotoCraftBinary, resolvePhotoCraftLaunch } from "./session";
+import { getPhotoCraftMcpSession } from "./mcp-session";
+import { env } from "../lib/env";
 
 const CLI_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -132,10 +134,16 @@ export interface PhotoCraftSyncOptions {
   includeDocument?: boolean;
   maxSide?: number;
   binaryPath?: string;
+  transport?: "rpc" | "mcp";
+  signal?: AbortSignal;
 }
 
 export function syncPhotoCraftRuntime(options: PhotoCraftSyncOptions): Promise<PhotoCraftRuntimeResult> {
-  const run = runtimeQueue.then(() => syncPhotoCraftRuntimeExclusive(options));
+  const run = runtimeQueue.then(() => {
+    // An aborted HTTP request must not occupy the serial engine queue later.
+    options.signal?.throwIfAborted();
+    return syncPhotoCraftRuntimeExclusive(options);
+  });
   runtimeQueue = run.catch(() => undefined);
   return run;
 }
@@ -144,7 +152,10 @@ async function syncPhotoCraftRuntimeExclusive(options: PhotoCraftSyncOptions): P
   const status = await probePhotoCraft(options.binaryPath);
   if (!status.available) throw new Error(status.message);
   const binary = await resolvePhotoCraftBinary(options.binaryPath);
-  const session = getPhotoCraftSession(binary);
+  const transport = options.transport ?? env.photocraftHeadlessTransport;
+  const session = transport === "mcp"
+    ? getPhotoCraftMcpSession(binary)
+    : getPhotoCraftSession(binary);
   const root = await session.getRoot();
   const width = Math.round(options.document.stock.width * options.document.stock.targetPpi / 25.4);
   const height = Math.round(options.document.stock.height * options.document.stock.targetPpi / 25.4);

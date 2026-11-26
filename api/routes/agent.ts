@@ -17,11 +17,13 @@ import {
   agentIntentSchema,
   designPresets,
   ornamentDirectionSchema,
+  ornamentRefinePlanSchema,
   ornamentSvg,
   type OrnamentProposal,
 } from "@contracts/agent";
 import { createKimiGateway, listModels, classifyAiError, AiMisconfigured, AiUnavailable, ContentRejected } from "../ai/ai-client";
 import { createAiProposal, createDeterministicProposal, getDesignCompositionPanelMap } from "../design";
+import { probeVectorCraft, refineOrnament } from "../vectorcraft/ornament";
 import { log } from "../lib/logger";
 
 function diagnostic(error: unknown) {
@@ -47,6 +49,7 @@ const runInputSchema = z.object({
       prompt: z.string().max(2000).default(""),
       intent: agentIntentSchema.default("design"),
       presetId: z.string().optional(),
+      assetId: z.string().optional(),
     }),
   }),
 }).passthrough();
@@ -121,6 +124,62 @@ function makeOrnamentProposal(
   return { summary: direction.summary, asset, node, sideId };
 }
 
+/** Proposal dari hasil refine VectorCraft: aset baru berisi SVG yang sudah diproses engine. */
+function makeRefinedOrnamentProposal(
+  document: InvitationDocument,
+  sideId: SideId,
+  sourceAsset: ProjectAsset,
+  refinedSvg: string,
+  summary: string,
+): OrnamentProposal {
+  const id = crypto.randomUUID();
+  const asset: ProjectAsset = {
+    id,
+    name: `${sourceAsset.name} · VectorCraft`,
+    kind: "ornament",
+    source: "generated",
+    contentType: "image/svg+xml",
+    generatedSvg: refinedSvg,
+    width: sourceAsset.width,
+    height: sourceAsset.height,
+  };
+  const size = Math.min(54, document.stock.width * 0.28, document.stock.height * 0.32);
+  const margin = document.stock.safeMargin + 4;
+  const node: DesignNode = {
+    id: crypto.randomUUID(),
+    kind: "image",
+    role: "CONTENT",
+    semanticRole: "ornament",
+    box: {
+      x: Math.max(margin, document.stock.width - margin - size),
+      y: margin,
+      width: size,
+      height: size,
+    },
+    rotation: 0,
+    visible: true,
+    locked: false,
+    opacity: 0.88,
+    zIndex: Math.max(0, ...document.sides.find((side) => side.id === sideId)?.nodes.map((node) => node.zIndex) ?? [0]) + 1,
+    assetId: id,
+    clipShape: "rectangle",
+  };
+  return { summary, asset, node, sideId };
+}
+
+/** Fallback deterministik: petakan warna hex pada instruksi ke recolor penuh. */
+function deterministicRefinePlan(prompt: string) {
+  const color = prompt.match(/#[0-9a-fA-F]{6}\b/)?.[0]?.toLowerCase();
+  if (!color) return null;
+  return {
+    summary: `Recolor seluruh ornamen ke ${color} (skill lokal, tanpa AI).`,
+    commands: [
+      { id: "select.all" },
+      { id: "paint.setFill", params: { color } },
+    ],
+  };
+}
+
 agentRoutes.post("/run", async (c) => {
   const parsed = runInputSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
@@ -172,6 +231,80 @@ agentRoutes.post("/run", async (c) => {
       await send(event("STATE_SNAPSHOT", {
         snapshot: { phase: "ANALYZING", projectRevision: null, proposalCount: 0 },
       }));
+
+      if (request.intent === "ornament-refine") {
+        await send(event("STEP_STARTED", { stepName: "refine-ornament" }));
+        const sourceAsset = document.assets.find((asset) =>
+          asset.id === request.assetId && asset.kind === "ornament" && asset.generatedSvg
+        );
+        if (!sourceAsset?.generatedSvg) {
+          await textMessage("Pilih ornamen vektor hasil generate (SVG) yang akan di-refine. Aset ornamen dari unggahan raster belum bisa diproses VectorCraft.");
+          await send(event("RUN_FINISHED", { threadId, runId }));
+          return;
+        }
+        const vcStatus = await probeVectorCraft();
+        if (!vcStatus.available) {
+          await textMessage(`Sidecar VectorCraft belum aktif (${vcStatus.message}). Ornamen belum berubah; atur VECTORCRAFT_CLI_BIN lalu coba lagi.`);
+          await send(event("RUN_FINISHED", { threadId, runId }));
+          return;
+        }
+        await activity("ornament-run-progress", "blangko.ornament.progress", {
+          stage: "vector-refine",
+          message: `Merencanakan perintah VectorCraft untuk ${sourceAsset.name}…`,
+          progress: 40,
+        });
+        let plan;
+        try {
+          const { defaultModelId } = await listModels();
+          const gateway = createKimiGateway();
+          const result = await generateObject({
+            model: gateway(defaultModelId),
+            schema: ornamentRefinePlanSchema,
+            system: "Anda menerjemahkan instruksi refine ornamen vektor menjadi perintah VectorCraft yang sudah terverifikasi. Hanya gunakan id perintah berikut: select.all (pilih semua), select.none, paint.setFill dengan params {color: '#rrggbb'} (isi warna seleksi), paint.swap (tukar fill/stroke), recolor.apply, recolor.reduce, recolor.randomize. Maksimal 8 langkah, urut dan deterministik; hampir semua refine diawali select.all. Warna harus hex enam digit yang disebut pengguna atau turunan palette yang jelas.",
+            prompt: `Instruksi refine: ${request.prompt || "rapikan warna ornamen"}. Ornamen: ${sourceAsset.name}.`,
+          });
+          plan = result.object;
+        } catch (error) {
+          log.error("agent ornament refine planning failed", diagnostic(error));
+          if (classifyAiError(error) instanceof AiMisconfigured) {
+            plan = deterministicRefinePlan(request.prompt) ?? undefined;
+            if (!plan) {
+              await textMessage("Model AI belum diprovisikan dan instruksi tidak memuat warna hex (mis. #2c3e50) untuk recolor deterministik. Tidak ada perubahan yang diterapkan.");
+              await send(event("RUN_FINISHED", { threadId, runId }));
+              return;
+            }
+          } else {
+            throw aiFailure(error);
+          }
+        }
+        await activity("ornament-run-progress", "blangko.ornament.progress", {
+          stage: "vector-engine",
+          message: "VectorCraft memproses ornamen (open → batch → export)…",
+          progress: 70,
+        });
+        const refined = await refineOrnament({
+          name: sourceAsset.name,
+          svgBase64: Buffer.from(sourceAsset.generatedSvg, "utf8").toString("base64"),
+          commands: plan.commands,
+        });
+        const proposal = makeRefinedOrnamentProposal(
+          document,
+          request.sideId,
+          sourceAsset,
+          Buffer.from(refined.svgBase64, "base64").toString("utf8"),
+          `${plan.summary} (${refined.completed} perintah VectorCraft)`,
+        );
+        await activity(crypto.randomUUID(), "blangko.ornament.proposal", { proposal });
+        await activity("ornament-run-progress", "blangko.ornament.progress", {
+          stage: "review",
+          message: "Ornamen hasil refine siap ditinjau.",
+          progress: 100,
+        });
+        await send(event("STEP_FINISHED", { stepName: "refine-ornament" }));
+        await textMessage(`${proposal.summary}\n\nPreview hasil refine tersedia di kartu. Pilih Sisipkan untuk menambahkannya sebagai satu revisi; aset asli tidak berubah.`);
+        await send(event("RUN_FINISHED", { threadId, runId }));
+        return;
+      }
 
       if (request.intent === "ornament") {
         await send(event("STEP_STARTED", { stepName: "compose-ornament" }));

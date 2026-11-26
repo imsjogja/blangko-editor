@@ -1,10 +1,11 @@
 import { useRef, useState } from "react";
-import { Bot, FileImage, FolderCog, ImagePlus, LoaderCircle, ScanLine, Trash2, Upload } from "lucide-react";
+import { Bot, FileCheck2, FileImage, FolderCog, ImagePlus, LoaderCircle, Printer, ScanLine, Trash2, Upload } from "lucide-react";
 import type { Message } from "@ag-ui/core";
 import {
   getSide,
   type DesignProposal,
   type InvitationDocument,
+  type PreflightIssue,
   type ProjectAsset,
   type SideId,
 } from "@contracts/invitation";
@@ -30,6 +31,7 @@ interface LeftPanelProps {
   agentMessages: Message[];
   agentError: string | null;
   proposal: DesignProposal | null;
+  issues: PreflightIssue[];
   onChange: (document: InvitationDocument) => void;
   onUpload: (file: File, kind: ProjectAsset["kind"]) => void;
   onInsertAsset: (asset: ProjectAsset) => void;
@@ -42,10 +44,12 @@ interface LeftPanelProps {
   onApplyProposal: (proposal: DesignProposal) => void;
   onApplyOrnament: (proposal: OrnamentProposal) => void;
   onDismissProposal: () => void;
+  onSelectNode: (id: string) => void;
+  onExport: () => void;
 }
 
 export function LeftPanel(props: LeftPanelProps) {
-  const [tab, setTab] = useState<"project" | "assets" | "agent">("project");
+  const [tab, setTab] = useState<"project" | "assets" | "agent" | "print">("project");
   const [assetKind, setAssetKind] = useState<ProjectAsset["kind"]>("photo");
   const [removeCandidate, setRemoveCandidate] = useState<string | null>(null);
   const blangkoInput = useRef<HTMLInputElement>(null);
@@ -54,6 +58,8 @@ export function LeftPanel(props: LeftPanelProps) {
   const side = getSide(document, sideId);
   const activeBlangko = document.assets.find((asset) => asset.id === side.blangkoAssetId);
   const analysis = activeBlangko?.analysis;
+  const preflightErrors = props.issues.filter((issue) => issue.severity === "error").length;
+  const preflightWarnings = props.issues.filter((issue) => issue.severity === "warning").length;
 
   const updateStock = (key: keyof InvitationDocument["stock"], value: number | boolean) => {
     if ((key === "width" || key === "height") && typeof value === "number") {
@@ -80,6 +86,7 @@ export function LeftPanel(props: LeftPanelProps) {
         <button type="button" role="tab" aria-selected={tab === "project"} className={tab === "project" ? "active" : ""} onClick={() => setTab("project")}><FolderCog size={16} /><span>Proyek</span></button>
         <button type="button" role="tab" aria-selected={tab === "assets"} className={tab === "assets" ? "active" : ""} onClick={() => setTab("assets")}><FileImage size={16} /><span>Aset</span></button>
         <button type="button" role="tab" aria-selected={tab === "agent"} className={tab === "agent" ? "active" : ""} onClick={() => setTab("agent")}><Bot size={16} /><span>Agen</span></button>
+        <button type="button" role="tab" aria-selected={tab === "print"} className={tab === "print" ? "active" : ""} onClick={() => setTab("print")}><Printer size={16} /><span>Cetak</span></button>
       </div>
 
       <div className="panel-scroll">
@@ -176,12 +183,33 @@ export function LeftPanel(props: LeftPanelProps) {
             messages={props.agentMessages}
             running={props.agentRunning}
             error={props.agentError}
+            ornaments={document.assets
+              .filter((asset) => asset.kind === "ornament" && asset.generatedSvg)
+              .map((asset) => ({ id: asset.id, name: asset.name }))}
             onWelcome={props.onAgentWelcome}
             onSend={props.onGenerate}
             onCancel={props.onCancelAgent}
             onApplyDesign={props.onApplyProposal}
             onApplyOrnament={props.onApplyOrnament}
           />
+        )}
+
+        {tab === "print" && (
+          <div className="panel-section-stack">
+            <section className="print-summary">
+              <div className="section-heading"><span>PROYEKSI CETAK</span></div>
+              <dl><div><dt>Ukuran halaman</dt><dd>{document.stock.width} × {document.stock.height} mm</dd></div><div><dt>Resolusi</dt><dd>{document.stock.targetPpi} ppi</dd></div><div><dt>Blangko</dt><dd>Dikecualikan</dd></div><div><dt>Garis bantu</dt><dd>Dikecualikan</dd></div></dl>
+            </section>
+            <section className="panel-section">
+              <div className={preflightErrors ? "preflight-count error" : "preflight-count"}><FileCheck2 size={20} /><div><strong>{preflightErrors} galat · {preflightWarnings} peringatan</strong><span>Preflight sisi {side.label}</span></div></div>
+              <div className="issue-list">{props.issues.slice(0, 5).map((issue, index) => <button type="button" key={`${issue.code}-${index}`} onClick={() => { if (issue.nodeId) props.onSelectNode(issue.nodeId); }} className={issue.severity === "error" ? "issue error" : "issue"}>{issue.message}</button>)}</div>
+            </section>
+            <section className="panel-section">
+              <button type="button" className="primary-button full-width" onClick={props.onExport}><Printer size={16} />Ekspor dokumen</button>
+              <p className="panel-hint">PDF dibuat pada skala 100%. Pilih “Actual size” pada dialog printer.</p>
+            </section>
+            <section className="engine-note"><span>CANVAS RUNTIME</span><strong>PhotoCraft Native · aktif</strong><p>Edit objek dan layer langsung di canvas native; perubahan otomatis tersimpan ke dokumen proyek.</p></section>
+          </div>
         )}
       </div>
     </aside>

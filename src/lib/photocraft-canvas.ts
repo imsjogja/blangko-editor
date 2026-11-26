@@ -19,6 +19,25 @@ interface PendingRequest {
   timer: number;
 }
 
+/** Native document JSON served by the fork's `inspect` request (protocol 2). */
+export interface PhotoCraftNativeInspect {
+  width?: number;
+  height?: number;
+  resolution?: number;
+  layers?: PhotoCraftNativeInspectLayer[];
+}
+
+export interface PhotoCraftNativeInspectLayer {
+  id?: string | number;
+  name?: string;
+  kind?: string;
+  visible?: boolean;
+  opacity?: number;
+  bounds?: [number, number, number, number] | null;
+  text?: { text?: string; font?: string; sizePt?: number };
+  children?: PhotoCraftNativeInspectLayer[];
+}
+
 function parsePayload(payload: unknown): unknown {
   if (typeof payload !== "string") return payload;
   try { return JSON.parse(payload) as unknown; } catch { return payload; }
@@ -29,7 +48,9 @@ export class PhotoCraftCanvasBridge {
   private iframe: HTMLIFrameElement | null = null;
   private pending = new Map<string, PendingRequest>();
   private ready = false;
+  private protocol = 0;
   private readyCallbacks: Array<() => void> = [];
+  private readyGeneration = 0;
   private revisionCallback: ((revision: PhotoCraftNativeRevision) => void) | null = null;
   private exportCallback: ((value: { id: string; format: string; bytes: Uint8Array; warnings: string[] }) => void) | null = null;
   private listener = (event: MessageEvent) => {
@@ -38,9 +59,10 @@ export class PhotoCraftCanvasBridge {
     if (envelope.channel !== "blangko-photocraft" || !envelope.payload) return;
     const raw = typeof envelope.payload === "string" ? parsePayload(envelope.payload) : envelope.payload;
     if (!raw || typeof raw !== "object") return;
-    const message = raw as { type?: string; id?: string; bytes?: Uint8Array; format?: string; warnings?: string };
+    const message = raw as { type?: string; id?: string; bytes?: Uint8Array; format?: string; warnings?: string; protocol?: number };
     if (message.type === "ready") {
       this.ready = true;
+      this.protocol = typeof message.protocol === "number" ? message.protocol : 1;
       this.readyCallbacks.splice(0).forEach((callback) => callback());
       return;
     }
@@ -80,6 +102,8 @@ export class PhotoCraftCanvasBridge {
   detach() {
     window.removeEventListener("message", this.listener);
     this.ready = false;
+    this.protocol = 0;
+    this.readyGeneration += 1;
     this.readyCallbacks = [];
     for (const request of this.pending.values()) {
       window.clearTimeout(request.timer);
@@ -99,6 +123,7 @@ export class PhotoCraftCanvasBridge {
 
   whenReady(timeoutMs = 90_000): Promise<void> {
     if (this.ready) return Promise.resolve();
+    const generation = this.readyGeneration;
     return new Promise((resolve, reject) => {
       const callback = () => {
         window.clearTimeout(timer);
@@ -106,6 +131,12 @@ export class PhotoCraftCanvasBridge {
       };
       const timer = window.setTimeout(() => {
         this.readyCallbacks = this.readyCallbacks.filter((item) => item !== callback);
+        // A React Strict Mode remount discards this bridge and creates a fresh one.
+        // The discarded waiter must not turn the new, healthy canvas into an error.
+        if (generation !== this.readyGeneration) {
+          resolve();
+          return;
+        }
         reject(new Error("PhotoCraft WASM tidak selesai dimuat. Periksa koneksi lalu muat ulang canvas."));
       }, timeoutMs);
       this.readyCallbacks.push(callback);
@@ -128,8 +159,33 @@ export class PhotoCraftCanvasBridge {
     });
   }
 
-  open(name: string, bytes: Uint8Array): Promise<unknown> {
-    return this.request({ type: "open", name, bytes }, 120_000);
+  open(name: string, bytes: Uint8Array): Promise<{ document: number | null; warnings: unknown }> {
+    return this.request({ type: "open", name, bytes }, 120_000).then((payload) => {
+      const reply = (payload ?? {}) as { document?: number; warnings?: unknown };
+      return { document: typeof reply.document === "number" ? reply.document : null, warnings: reply.warnings };
+    });
+  }
+
+  /** Whether the running WASM build serves the `inspect` request (protocol ≥ 2). */
+  get supportsInspect(): boolean {
+    return this.ready && this.protocol >= 2;
+  }
+
+  /** Whether the running WASM build keeps documents open as tabs (protocol ≥ 3). */
+  get supportsMultiDocument(): boolean {
+    return this.ready && this.protocol >= 3;
+  }
+
+  inspect(document?: number): Promise<PhotoCraftNativeInspect> {
+    return this.request(document === undefined ? { type: "inspect" } : { type: "inspect", document }) as Promise<PhotoCraftNativeInspect>;
+  }
+
+  activate(document: number): Promise<unknown> {
+    return this.request({ type: "activate", document });
+  }
+
+  close(document: number): Promise<unknown> {
+    return this.request({ type: "close", document });
   }
 
   command(method: string, params: Record<string, unknown> = {}): Promise<unknown> {

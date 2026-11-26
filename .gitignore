@@ -43,3 +43,8 @@ coverage/
 # Toolchain lokal untuk rebuild WASM PhotoCraft (trunk, wasm-opt)
 .tools/
 .qa-output/
+
+# VectorCraft sidecar CLI binary diunduh/dikonfigurasi via VECTORCRAFT_CLI_BIN, tidak di-commit
+
+# VectorCraft sidecar CLI diunduh/dikonfigurasi via VECTORCRAFT_CLI_BIN, tidak di-commit
+vendor/vectorcraft/
